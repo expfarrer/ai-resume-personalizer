@@ -1,65 +1,114 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import React from "react";
+import StreamGenerator from "@/components/StreamGenerator";
+
+export default function Page() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <main className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+      <div className="mx-auto max-w-6xl px-4 py-8">
+        {/* Header */}
+        <header className="mb-12">
+          <h1 className="text-3xl font-bold tracking-tight">
+            AI Resume Personalizer
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+
+          <p className="mt-3 max-w-3xl text-sm leading-relaxed text-slate-700 dark:text-slate-300">
+            AI Resume Personalizer analyzes job descriptions and your experience
+            to generate tailored summaries, optimized resume bullets, and
+            targeted interview questions.
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+
+          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-700 dark:text-slate-300">
+            Choose between standard JSON or streaming mode to explore different
+            AI response patterns and integration styles. Built as a modern
+            full-stack playground for developing and refining AI-powered
+            workflows.{" "}
+            <a
+              href="#technical-doc"
+              className="font-medium underline underline-offset-4 hover:text-slate-900 dark:hover:text-white"
+            >
+              Technical docu
+            </a>
+          </p>
+        </header>
+
+        <StreamGenerator />
+
+        {/* Technical Documentation Section */}
+        <section
+          id="technical-doc"
+          className="mt-20 rounded-3xl border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+        >
+          <h2 className="text-2xl font-semibold tracking-tight">
+            Technical Documentation
+          </h2>
+
+          <p className="mt-4 text-sm leading-relaxed text-slate-700 dark:text-slate-300">
+            This application supports two response modes: standard JSON and
+            streaming. Below is a simplified explanation of how both work and
+            why they matter in real-world LLM integrations.
+          </p>
+
+          <div className="mt-8 space-y-8">
+            <div>
+              <h3 className="text-lg font-semibold">
+                JSON Mode (Non-Streaming)
+              </h3>
+              <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
+                In JSON mode, the server processes the entire request and then
+                returns a single complete JSON response. The client waits until
+                the full result is available and parses it using
+                <code className="mx-1 rounded bg-slate-100 px-1 py-0.5 text-xs dark:bg-slate-800">
+                  await res.json()
+                </code>
+                .
+              </p>
+
+              <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-700 dark:text-slate-300">
+                <li>Single request</li>
+                <li>Single complete JSON response</li>
+                <li>Simple implementation</li>
+                <li>Ideal for structured form workflows</li>
+              </ul>
+            </div>
+
+            <div>
+              <h3 className="text-lg font-semibold">Stream Mode</h3>
+              <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
+                In stream mode, the server sends the response in smaller chunks.
+                The client reads these chunks progressively using a stream
+                reader and assembles the final output as data arrives.
+              </p>
+
+              <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-700 dark:text-slate-300">
+                <li>Data arrives incrementally</li>
+                <li>Client uses a readable stream</li>
+                <li>Improves perceived performance</li>
+                <li>Enables progressive rendering patterns</li>
+              </ul>
+            </div>
+
+            <div>
+              <h3 className="text-lg font-semibold">
+                Why Supporting Both Matters
+              </h3>
+              <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">
+                Supporting both response types demonstrates understanding of
+                modern API design, browser stream handling, progressive
+                rendering, and production-ready LLM integration patterns.
+              </p>
+
+              <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-700 dark:text-slate-300">
+                <li>Traditional request-response workflows</li>
+                <li>Streaming architectures</li>
+                <li>Frontend state management for async data</li>
+                <li>Scalable AI integration approaches</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
   );
 }

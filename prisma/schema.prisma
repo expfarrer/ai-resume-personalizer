@@ -1,0 +1,15 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Generation {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  jobDesc    String
+  experience String
+  resultJson String
+}

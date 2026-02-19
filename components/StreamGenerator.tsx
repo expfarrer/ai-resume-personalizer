@@ -23,6 +23,8 @@ export default function StreamGenerator() {
   const [source, setSource] = useState<string>("—");
   const [contentType, setContentType] = useState<string>("—");
 
+  const [copyStatus, setCopyStatus] = useState<string>("");
+
   const controllerRef = useRef<AbortController | null>(null);
 
   const canRun = jobDesc.trim().length > 0 && experience.trim().length > 0;
@@ -41,6 +43,58 @@ export default function StreamGenerator() {
     setError(null);
     setSource("—");
     setContentType("—");
+    setCopyStatus("");
+  }
+
+  function setStatusTemp(msg: string) {
+    setCopyStatus(msg);
+    window.setTimeout(() => setCopyStatus(""), 2500);
+  }
+
+  async function copyText(label: string, text: string) {
+    try {
+      // Preferred modern clipboard API
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        setStatusTemp(`${label} copied`);
+        return;
+      }
+
+      // Fallback for older browsers / certain permissions
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "true");
+      ta.style.position = "absolute";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+
+      setStatusTemp(`${label} copied`);
+    } catch (e: any) {
+      setStatusTemp(`Copy failed: ${e?.message ?? "permission denied"}`);
+    }
+  }
+
+  function buildMarkdown(out: Output) {
+    const bullets = out.resumeBullets.map((b) => `- ${b}`).join("\n");
+    const questions = out.interviewQuestions.map((q) => `1. ${q}`).join("\n");
+
+    return [
+      `## Summary`,
+      ``,
+      out.summary.trim(),
+      ``,
+      `## Resume Bullets`,
+      ``,
+      bullets,
+      ``,
+      `## Interview Questions`,
+      ``,
+      questions,
+      ``,
+    ].join("\n");
   }
 
   async function run() {
@@ -49,6 +103,7 @@ export default function StreamGenerator() {
     setRaw("");
     setSource("—");
     setContentType("—");
+    setCopyStatus("");
     setLoading(true);
 
     controllerRef.current?.abort();
@@ -74,12 +129,10 @@ export default function StreamGenerator() {
         throw new Error(`HTTP ${res.status}: ${text}`);
       }
 
-      // If user chose JSON mode, expect normal JSON and parse directly.
+      // JSON mode: parse directly
       if (mode === "json") {
         setSource("JSON (non-stream endpoint)");
         const json = (await res.json()) as any;
-
-        // your API might return { result: Output } or Output directly
         const candidate = (json?.result ?? json) as Output;
 
         if (
@@ -96,10 +149,10 @@ export default function StreamGenerator() {
         throw new Error("JSON response did not match expected Output shape.");
       }
 
-      // Stream mode: support either NDJSON or normal JSON (your server currently returns JSON).
+      // Stream mode: accept either JSON (current behavior) or NDJSON (future behavior)
       setSource("Stream (mode selected)");
 
-      // Case A: server returns single JSON payload even for stream=true
+      // Case A: server returns JSON even when stream=true
       if (ct.includes("application/json") && !ct.includes("ndjson")) {
         const text = await res.text();
         setRaw(text);
@@ -122,7 +175,6 @@ export default function StreamGenerator() {
 
       // Case B: NDJSON streaming
       if (!res.body) throw new Error("No response body for streaming");
-
       setSource("Stream selected, NDJSON detected");
 
       const reader = res.body.getReader();
@@ -286,7 +338,40 @@ export default function StreamGenerator() {
           >
             Clear
           </button>
+
+          {output && (
+            <div className="flex flex-wrap gap-2 sm:ml-auto">
+              <button
+                onClick={() => copyText("Summary", output.summary)}
+                className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
+              >
+                Copy Summary
+              </button>
+
+              <button
+                onClick={() =>
+                  copyText("Bullets", output.resumeBullets.join("\n"))
+                }
+                className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
+              >
+                Copy Bullets
+              </button>
+
+              <button
+                onClick={() => copyText("Markdown", buildMarkdown(output))}
+                className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
+              >
+                Copy All as Markdown
+              </button>
+            </div>
+          )}
         </div>
+
+        {copyStatus && (
+          <div className="mt-3 text-sm font-medium text-slate-800 dark:text-slate-200">
+            {copyStatus}
+          </div>
+        )}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">

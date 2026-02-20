@@ -69,6 +69,12 @@ export async function POST(req: Request) {
         { status: 501 },
       );
     } else {
+      if (!client) {
+        return NextResponse.json(
+          { error: "OpenAI client not initialized" },
+          { status: 500 },
+        );
+      }
       const resp = await client.chat.completions.create({
         model: "gpt-4.1-mini",
         temperature: 0.4,

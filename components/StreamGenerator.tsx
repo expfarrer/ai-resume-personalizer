@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 type Output = {
   summary: string;
@@ -9,6 +9,34 @@ type Output = {
 };
 
 type Mode = "json" | "stream";
+
+type HistoryItem = {
+  id: string;
+  createdAt: string;
+  jobDesc: string;
+  experience: string;
+  resultJson: string;
+};
+
+function isOutput(x: any): x is Output {
+  return (
+    x &&
+    typeof x.summary === "string" &&
+    Array.isArray(x.resumeBullets) &&
+    Array.isArray(x.interviewQuestions)
+  );
+}
+
+function formatWhen(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
+function previewText(s: string, n = 56) {
+  const oneLine = (s ?? "").replace(/\s+/g, " ").trim();
+  return oneLine.length > n ? oneLine.slice(0, n) + "…" : oneLine;
+}
 
 export default function StreamGenerator() {
   const [mode, setMode] = useState<Mode>("json");
@@ -24,6 +52,12 @@ export default function StreamGenerator() {
   const [contentType, setContentType] = useState<string>("—");
 
   const [copyStatus, setCopyStatus] = useState<string>("");
+
+  // History
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
 
   const controllerRef = useRef<AbortController | null>(null);
 
@@ -44,23 +78,22 @@ export default function StreamGenerator() {
     setSource("—");
     setContentType("—");
     setCopyStatus("");
+    setActiveHistoryId(null);
   }
 
   function setStatusTemp(msg: string) {
     setCopyStatus(msg);
-    window.setTimeout(() => setCopyStatus(""), 2500);
+    window.setTimeout(() => setCopyStatus(""), 1500);
   }
 
   async function copyText(label: string, text: string) {
     try {
-      // Preferred modern clipboard API
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
         setStatusTemp(`${label} copied`);
         return;
       }
 
-      // Fallback for older browsers / certain permissions
       const ta = document.createElement("textarea");
       ta.value = text;
       ta.setAttribute("readonly", "true");
@@ -97,6 +130,54 @@ export default function StreamGenerator() {
     ].join("\n");
   }
 
+  async function fetchHistory() {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const res = await fetch("/api/history", { method: "GET" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error ?? "Failed to load history");
+      setHistory(
+        Array.isArray(json?.items) ? (json.items as HistoryItem[]) : [],
+      );
+    } catch (e: any) {
+      setHistoryError(e?.message ?? "Failed to load history");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  function loadFromHistory(item: HistoryItem) {
+    setActiveHistoryId(item.id);
+    setJobDesc(item.jobDesc ?? "");
+    setExperience(item.experience ?? "");
+
+    try {
+      const parsed = JSON.parse(item.resultJson);
+      if (isOutput(parsed)) {
+        setOutput(parsed);
+        setRaw(JSON.stringify(parsed, null, 2));
+        setError(null);
+        setSource("Loaded from history");
+        setContentType("—");
+      } else {
+        setOutput(null);
+        setRaw(item.resultJson);
+        setError(
+          "History item resultJson did not match expected Output shape.",
+        );
+      }
+    } catch {
+      setOutput(null);
+      setRaw(item.resultJson);
+      setError("Failed to parse history resultJson.");
+    }
+  }
+
+  useEffect(() => {
+    fetchHistory();
+  }, []);
+
   async function run() {
     setError(null);
     setOutput(null);
@@ -129,111 +210,35 @@ export default function StreamGenerator() {
         throw new Error(`HTTP ${res.status}: ${text}`);
       }
 
-      // JSON mode: parse directly
       if (mode === "json") {
         setSource("JSON (non-stream endpoint)");
         const json = (await res.json()) as any;
         const candidate = (json?.result ?? json) as Output;
 
-        if (
-          typeof candidate?.summary === "string" &&
-          Array.isArray(candidate?.resumeBullets) &&
-          Array.isArray(candidate?.interviewQuestions)
-        ) {
-          setOutput(candidate);
-          setRaw(JSON.stringify(candidate, null, 2));
-          return;
+        if (!isOutput(candidate)) {
+          setRaw(JSON.stringify(json, null, 2));
+          throw new Error("JSON response did not match expected Output shape.");
         }
 
-        setRaw(JSON.stringify(json, null, 2));
-        throw new Error("JSON response did not match expected Output shape.");
-      }
+        setOutput(candidate);
+        setRaw(JSON.stringify(candidate, null, 2));
+        setActiveHistoryId(null);
+      } else {
+        setSource("Stream (mode selected)");
 
-      // Stream mode: accept either JSON (current behavior) or NDJSON (future behavior)
-      setSource("Stream (mode selected)");
-
-      // Case A: server returns JSON even when stream=true
-      if (ct.includes("application/json") && !ct.includes("ndjson")) {
         const text = await res.text();
         setRaw(text);
 
-        const parsed = JSON.parse(text) as Output;
-        if (
-          typeof parsed?.summary === "string" &&
-          Array.isArray(parsed?.resumeBullets) &&
-          Array.isArray(parsed?.interviewQuestions)
-        ) {
-          setSource("Stream selected, server returned JSON");
-          setOutput(parsed);
-          return;
+        const parsed = JSON.parse(text);
+        if (!isOutput(parsed)) {
+          throw new Error(
+            "Stream selected but JSON response did not match Output shape.",
+          );
         }
 
-        throw new Error(
-          "Stream selected but JSON response did not match Output shape.",
-        );
-      }
-
-      // Case B: NDJSON streaming
-      if (!res.body) throw new Error("No response body for streaming");
-      setSource("Stream selected, NDJSON detected");
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-
-      let buffer = "";
-      const parts: string[] = [];
-      let seenDone = false;
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-
-        const chunkText = decoder.decode(value, { stream: true });
-        setRaw((prev) => prev + chunkText);
-
-        buffer += chunkText;
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const obj = JSON.parse(line);
-            if (obj.type === "chunk" && typeof obj.text === "string")
-              parts.push(obj.text);
-            if (obj.type === "done") seenDone = true;
-          } catch {
-            // ignore malformed line
-          }
-        }
-      }
-
-      if (buffer.trim()) {
-        try {
-          const obj = JSON.parse(buffer);
-          if (obj.type === "chunk" && typeof obj.text === "string")
-            parts.push(obj.text);
-          if (obj.type === "done") seenDone = true;
-        } catch {
-          // ignore
-        }
-      }
-
-      if (!seenDone)
-        throw new Error("Stream ended before receiving a done marker.");
-
-      const finalJsonText = parts.join("");
-      const parsed = JSON.parse(finalJsonText) as Output;
-
-      if (
-        typeof parsed?.summary === "string" &&
-        Array.isArray(parsed?.resumeBullets) &&
-        Array.isArray(parsed?.interviewQuestions)
-      ) {
+        setSource("Stream selected, server returned JSON");
         setOutput(parsed);
-      } else {
-        throw new Error("Assembled stream JSON did not match Output shape.");
+        setActiveHistoryId(null);
       }
     } catch (err: any) {
       if (err?.name === "AbortError") setError("Request stopped.");
@@ -241,6 +246,7 @@ export default function StreamGenerator() {
     } finally {
       setLoading(false);
       controllerRef.current = null;
+      fetchHistory();
     }
   }
 
@@ -271,178 +277,248 @@ export default function StreamGenerator() {
         </div>
       </header>
 
-      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
-            <div className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Job description
-            </div>
-            <textarea
-              value={jobDesc}
-              onChange={(e) => setJobDesc(e.target.value)}
-              rows={12}
-              placeholder="Paste job description..."
-              className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400"
-            />
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
-            <div className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Experience bullets
-            </div>
-            <textarea
-              value={experience}
-              onChange={(e) => setExperience(e.target.value)}
-              rows={12}
-              placeholder={"- Led ...\n- Built ..."}
-              className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400"
-            />
-          </div>
-        </div>
-
-        <div className="mt-4 flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-              Mode
-            </span>
-            <select
-              value={mode}
-              onChange={(e) => setMode(e.target.value as Mode)}
-              className="h-10 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-            >
-              <option value="json">JSON (non-stream)</option>
-              <option value="stream">Stream (stream=true)</option>
-            </select>
-          </label>
-
-          <button
-            onClick={run}
-            disabled={loading || !canRun}
-            className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
-          >
-            {loading ? "Running..." : "Run"}
-          </button>
-
-          <button
-            onClick={stop}
-            disabled={!loading}
-            className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
-          >
-            Stop
-          </button>
-
-          <button
-            onClick={clearAll}
-            disabled={loading}
-            className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
-          >
-            Clear
-          </button>
-
-          {output && (
-            <div className="flex flex-wrap gap-2 sm:ml-auto">
-              <button
-                onClick={() => copyText("Summary", output.summary)}
-                className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
-              >
-                Copy Summary
-              </button>
-
-              <button
-                onClick={() =>
-                  copyText("Bullets", output.resumeBullets.join("\n"))
-                }
-                className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
-              >
-                Copy Bullets
-              </button>
-
-              <button
-                onClick={() => copyText("Markdown", buildMarkdown(output))}
-                className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
-              >
-                Copy All as Markdown
-              </button>
-            </div>
-          )}
-        </div>
-
-        {copyStatus && (
-          <div className="mt-3 text-sm font-medium text-slate-800 dark:text-slate-200">
-            {copyStatus}
-          </div>
-        )}
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <div className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
-            Raw response
-          </div>
-          <pre className="max-h-[420px] overflow-auto rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-900 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100">
-            {raw || "(waiting...)"}
-          </pre>
-        </div>
-
-        <div className="space-y-4">
-          {error && (
-            <div className="rounded-3xl border border-rose-200 bg-rose-50 p-5 shadow-sm dark:border-rose-900/50 dark:bg-rose-950/40">
-              <div className="text-sm font-semibold text-rose-900 dark:text-rose-100">
-                Error
+      <div className="grid gap-4 lg:grid-cols-12">
+        {/* Main content FIRST (left) */}
+        <div className="lg:col-span-8 space-y-4">
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
+                <div className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  Job description
+                </div>
+                <textarea
+                  value={jobDesc}
+                  onChange={(e) => setJobDesc(e.target.value)}
+                  rows={12}
+                  placeholder="Paste job description..."
+                  className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400"
+                />
               </div>
-              <pre className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-rose-900 dark:text-rose-100">
-                {error}
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
+                <div className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  Experience bullets
+                </div>
+                <textarea
+                  value={experience}
+                  onChange={(e) => setExperience(e.target.value)}
+                  rows={12}
+                  placeholder={"- Led ...\n- Built ..."}
+                  className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400"
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-end gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                  Mode
+                </span>
+                <select
+                  value={mode}
+                  onChange={(e) => setMode(e.target.value as Mode)}
+                  className="h-10 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                >
+                  <option value="json">JSON (non-stream)</option>
+                  <option value="stream">Stream (stream=true)</option>
+                </select>
+              </label>
+
+              <button
+                onClick={run}
+                disabled={loading || !canRun}
+                className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
+              >
+                {loading ? "Running..." : "Run"}
+              </button>
+
+              <button
+                onClick={stop}
+                disabled={!loading}
+                className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
+              >
+                Stop
+              </button>
+
+              <button
+                onClick={clearAll}
+                disabled={loading}
+                className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
+              >
+                Clear
+              </button>
+
+              {output && (
+                <div className="flex flex-wrap gap-2 sm:ml-auto">
+                  <button
+                    onClick={() => copyText("Summary", output.summary)}
+                    className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
+                  >
+                    Copy Summary
+                  </button>
+
+                  <button
+                    onClick={() =>
+                      copyText("Bullets", output.resumeBullets.join("\n"))
+                    }
+                    className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
+                  >
+                    Copy Bullets
+                  </button>
+
+                  <button
+                    onClick={() => copyText("Markdown", buildMarkdown(output))}
+                    className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
+                  >
+                    Copy All as Markdown
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {copyStatus && (
+              <div className="mt-3 inline-flex items-center rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+                {copyStatus}
+              </div>
+            )}
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Raw response
+              </div>
+              <pre className="max-h-[420px] overflow-auto rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-900 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100">
+                {raw || "(waiting...)"}
               </pre>
             </div>
-          )}
 
-          {output && (
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-              <div className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">
-                Parsed output
-              </div>
-
-              <div className="space-y-4">
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
-                    Summary
+            <div className="space-y-4">
+              {error && (
+                <div className="rounded-3xl border border-rose-200 bg-rose-50 p-5 shadow-sm dark:border-rose-900/50 dark:bg-rose-950/40">
+                  <div className="text-sm font-semibold text-rose-900 dark:text-rose-100">
+                    Error
                   </div>
-                  <p className="mt-2 whitespace-pre-wrap text-sm text-slate-900 dark:text-slate-100">
-                    {output.summary}
-                  </p>
+                  <pre className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-rose-900 dark:text-rose-100">
+                    {error}
+                  </pre>
                 </div>
+              )}
 
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
-                    Resume bullets
+              {output && (
+                <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                  <div className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    Parsed output
                   </div>
-                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-900 dark:text-slate-100">
-                    {output.resumeBullets.map((b, i) => (
-                      <li key={i}>{b}</li>
-                    ))}
-                  </ul>
-                </div>
 
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
-                    Interview questions
+                  <div className="space-y-4">
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
+                        Summary
+                      </div>
+                      <p className="mt-2 whitespace-pre-wrap text-sm text-slate-900 dark:text-slate-100">
+                        {output.summary}
+                      </p>
+                    </div>
+
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
+                        Resume bullets
+                      </div>
+                      <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-900 dark:text-slate-100">
+                        {output.resumeBullets.map((b, i) => (
+                          <li key={i}>{b}</li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
+                        Interview questions
+                      </div>
+                      <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-slate-900 dark:text-slate-100">
+                        {output.interviewQuestions.map((q, i) => (
+                          <li key={i}>{q}</li>
+                        ))}
+                      </ol>
+                    </div>
                   </div>
-                  <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-slate-900 dark:text-slate-100">
-                    {output.interviewQuestions.map((q, i) => (
-                      <li key={i}>{q}</li>
-                    ))}
-                  </ol>
                 </div>
-              </div>
+              )}
+
+              {!error && !output && (
+                <div className="rounded-3xl border border-slate-200 bg-white p-5 text-sm text-slate-700 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+                  Choose a mode and click Run to see results.
+                </div>
+              )}
             </div>
-          )}
-
-          {!error && !output && (
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 text-sm text-slate-700 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
-              Choose a mode and click Run to see results.
-            </div>
-          )}
+          </div>
         </div>
+
+        {/* History sidebar SECOND (right) */}
+        <aside className="lg:col-span-4 lg:border-l lg:border-slate-200 lg:pl-4 dark:lg:border-slate-800">
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  History
+                </div>
+                <div className="text-xs text-slate-600 dark:text-slate-300">
+                  Last 10 generations
+                </div>
+              </div>
+
+              <button
+                onClick={fetchHistory}
+                disabled={historyLoading}
+                className="h-9 rounded-xl bg-slate-200 px-3 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
+              >
+                {historyLoading ? "Loading…" : "Refresh"}
+              </button>
+            </div>
+
+            {historyError && (
+              <div className="mt-3 text-sm text-rose-700 dark:text-rose-200">
+                {historyError}
+              </div>
+            )}
+
+            <div className="mt-4 space-y-2">
+              {history.length === 0 && !historyLoading ? (
+                <div className="text-sm text-slate-600 dark:text-slate-300">
+                  No saved generations yet.
+                </div>
+              ) : null}
+
+              {history.map((item) => {
+                const active = item.id === activeHistoryId;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => loadFromHistory(item)}
+                    className={[
+                      "w-full rounded-2xl border px-3 py-3 text-left shadow-sm",
+                      "hover:bg-slate-50 dark:hover:bg-slate-800/40",
+                      active
+                        ? "border-slate-500 bg-slate-50 dark:border-slate-400 dark:bg-slate-800/40"
+                        : "border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900",
+                    ].join(" ")}
+                  >
+                    <div className="text-xs font-semibold text-slate-900 dark:text-slate-100">
+                      {formatWhen(item.createdAt)}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-700 dark:text-slate-300">
+                      JD: {previewText(item.jobDesc)}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-700 dark:text-slate-300">
+                      EXP: {previewText(item.experience)}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </aside>
       </div>
     </section>
   );

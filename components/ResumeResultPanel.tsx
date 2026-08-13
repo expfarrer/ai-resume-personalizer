@@ -39,7 +39,6 @@ const FALLBACK_TIER: LayoutTier = {
   subheadingSize: 10.5,
   bodySize: 10,
   bulletSize: 10,
-  headerSize: 8,
   lineGap: 2.5,
   headingPre: 4,
   subheadingPre: 2,
@@ -128,8 +127,6 @@ export default function ResumeResultPanel({
   useEffect(() => {
     const handle = window.setTimeout(() => {
       computeLayoutTier({
-        company: output.company,
-        roleTitle: output.roleTitle,
         tailoredResume: blocksToMarkdown(blocks),
         // Browser text reflow wraps slightly more eagerly than pdf-lib's
         // own measurement even at matching font/size — bias toward a
@@ -141,7 +138,7 @@ export default function ResumeResultPanel({
         .catch(() => setLayoutTier(FALLBACK_TIER));
     }, 250);
     return () => window.clearTimeout(handle);
-  }, [blocks, output.company, output.roleTitle]);
+  }, [blocks]);
 
   function setStatusTemp(msg: string) {
     setCopyStatus(msg);
@@ -445,19 +442,6 @@ export default function ResumeResultPanel({
                 padding: layoutTier.margin * PT_TO_PX,
               }}
             >
-              {/* Matches the "Tailored for: ..." line buildResumePdf draws
-                  at the top of the exported PDF — synthesized, not part of
-                  the editable blocks, so it's not itself editable here. */}
-              <div
-                style={{
-                  fontSize: layoutTier.headerSize * PT_TO_PX,
-                  lineHeight: `${(layoutTier.headerSize + 1) * PT_TO_PX}px`,
-                  marginBottom: 4 * PT_TO_PX,
-                  color: "rgb(128, 128, 140)",
-                }}
-              >
-                Tailored for: {output.roleTitle} at {output.company}
-              </div>
               <div>
                 {blocks.map((b) => {
                   if (b.type === "blank") {

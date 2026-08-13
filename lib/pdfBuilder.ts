@@ -28,7 +28,6 @@ export type LayoutTier = {
   subheadingSize: number;
   bodySize: number;
   bulletSize: number;
-  headerSize: number;
   lineGap: number;
   headingPre: number; // extra gap before a major section heading
   subheadingPre: number; // extra gap before a role sub-heading
@@ -41,7 +40,6 @@ const SPACIOUS_TIER: LayoutTier = {
   subheadingSize: 10.5,
   bodySize: 10,
   bulletSize: 10,
-  headerSize: 8,
   lineGap: 2.5,
   headingPre: 4,
   subheadingPre: 2,
@@ -54,7 +52,6 @@ const TIGHT_TIER: LayoutTier = {
   subheadingSize: 9.5,
   bodySize: 9,
   bulletSize: 9,
-  headerSize: 7.5,
   lineGap: 1.3,
   headingPre: 2,
   subheadingPre: 0.5,
@@ -70,7 +67,6 @@ function interpolateTier(t: number): LayoutTier {
     subheadingSize: lerp(TIGHT_TIER.subheadingSize, SPACIOUS_TIER.subheadingSize),
     bodySize: lerp(TIGHT_TIER.bodySize, SPACIOUS_TIER.bodySize),
     bulletSize: lerp(TIGHT_TIER.bulletSize, SPACIOUS_TIER.bulletSize),
-    headerSize: lerp(TIGHT_TIER.headerSize, SPACIOUS_TIER.headerSize),
     lineGap: lerp(TIGHT_TIER.lineGap, SPACIOUS_TIER.lineGap),
     headingPre: lerp(TIGHT_TIER.headingPre, SPACIOUS_TIER.headingPre),
     subheadingPre: lerp(TIGHT_TIER.subheadingPre, SPACIOUS_TIER.subheadingPre),
@@ -189,7 +185,6 @@ export function buildAsciiFilename(filename: string): string {
 // vertical space it would consume, without touching a PDFPage. Used to pick
 // the most generous layout tier that still fits on a single page.
 function measureContentHeight(
-  headerLabel: string,
   tailoredResume: string,
   regular: PDFFont,
   bold: PDFFont,
@@ -197,11 +192,6 @@ function measureContentHeight(
 ): number {
   const contentWidth = PAGE_WIDTH - tier.margin * 2;
   let used = 0;
-
-  used +=
-    wrapLine(headerLabel, regular, tier.headerSize, contentWidth).length *
-      (tier.headerSize + tier.lineGap) +
-    4;
 
   let previousWasBlank = true;
   for (const rawLine of tailoredResume.split("\n")) {
@@ -254,7 +244,6 @@ function measureContentHeight(
 }
 
 function chooseLayoutTier(
-  headerLabel: string,
   tailoredResume: string,
   regular: PDFFont,
   bold: PDFFont,
@@ -268,7 +257,7 @@ function chooseLayoutTier(
   const fits = (t: number) => {
     const tier = interpolateTier(t);
     const available = (PAGE_HEIGHT - tier.margin * 2) * availableHeightFactor;
-    const needed = measureContentHeight(headerLabel, tailoredResume, regular, bold, tier);
+    const needed = measureContentHeight(tailoredResume, regular, bold, tier);
     return needed <= available;
   };
 
@@ -296,17 +285,14 @@ function chooseLayoutTier(
 // get, without generating a full PDF — used by the client-side preview so
 // its spacing matches what "Generate PDF" will actually produce.
 export async function computeLayoutTier(params: {
-  company: string;
-  roleTitle: string;
   tailoredResume: string;
   availableHeightFactor?: number;
 }): Promise<LayoutTier> {
-  const { company, roleTitle, tailoredResume, availableHeightFactor = 1 } = params;
+  const { tailoredResume, availableHeightFactor = 1 } = params;
   const doc = await PDFDocument.create();
   const regular = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-  const headerLabel = `Tailored for: ${roleTitle} at ${company}`;
-  return chooseLayoutTier(headerLabel, tailoredResume, regular, bold, availableHeightFactor);
+  return chooseLayoutTier(tailoredResume, regular, bold, availableHeightFactor);
 }
 
 export async function buildResumePdf(params: {
@@ -324,13 +310,7 @@ export async function buildResumePdf(params: {
   const regular = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
 
-  // Small at-a-glance header so the exported file is self-identifying when
-  // opened outside this app (e.g. from a downloads folder full of resumes)
-  // — distinct from the candidate's own name/contact header drawn from
-  // tailoredResume itself, below.
-  const headerLabel = `Tailored for: ${roleTitle} at ${company}`;
-
-  const tier = chooseLayoutTier(headerLabel, tailoredResume, regular, bold);
+  const tier = chooseLayoutTier(tailoredResume, regular, bold);
   const margin = tier.margin;
   const contentWidth = PAGE_WIDTH - margin * 2;
 
@@ -367,9 +347,6 @@ export async function buildResumePdf(params: {
       y -= size + lineGap;
     }
   }
-
-  drawWrapped(headerLabel, regular, tier.headerSize, rgb(0.5, 0.5, 0.55), 0, 1);
-  y -= 4;
 
   const rawLines = tailoredResume.split("\n");
   let previousWasBlank = true; // suppress a leading gap at the very top of the page

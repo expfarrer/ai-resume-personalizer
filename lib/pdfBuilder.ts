@@ -169,6 +169,14 @@ export async function buildResumePdf(params: {
     }
   }
 
+  // Small at-a-glance header so the exported file is self-identifying when
+  // opened outside this app (e.g. from a downloads folder full of resumes)
+  // — distinct from the candidate's own name/contact header drawn from
+  // tailoredResume itself, below.
+  const headerLabel = `Tailored for: ${roleTitle} at ${company}`;
+  drawWrapped(headerLabel, regular, 8, rgb(0.5, 0.5, 0.55), 0, 1);
+  y -= 4;
+
   const rawLines = tailoredResume.split("\n");
   let previousWasBlank = true; // suppress a leading gap at the very top of the page
 

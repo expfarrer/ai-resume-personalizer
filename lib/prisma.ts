@@ -5,7 +5,6 @@ import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 
 declare global {
   // avoid creating multiple clients during HMR in dev
-  // eslint-disable-next-line no-var
   var prisma: PrismaClient | undefined;
 }
 

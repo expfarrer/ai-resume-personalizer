@@ -12,14 +12,14 @@ export async function GET() {
         jobDesc: true,
         experience: true,
         resultJson: true,
+        applyUrl: true,
+        specialInstructions: true,
       },
     });
 
     return NextResponse.json({ items });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message ?? "Failed to load history" },
-      { status: 500 },
-    );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Failed to load history";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

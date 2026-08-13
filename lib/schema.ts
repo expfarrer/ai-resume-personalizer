@@ -2,10 +2,10 @@
 import { z } from "zod";
 
 export const OutputSchema = z.object({
-  summary: z.string().min(10),
-  resumeBullets: z
-    .array(z.string().min(1))
-    .length(5, { message: "resumeBullets must have exactly 5 items" }),
+  company: z.string().min(1),
+  roleTitle: z.string().min(1),
+  adaptationNotes: z.string().min(10),
+  tailoredResume: z.string().min(50),
   interviewQuestions: z.array(z.string().min(1)).min(8).max(12),
 });
 

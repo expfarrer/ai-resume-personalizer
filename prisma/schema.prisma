@@ -12,4 +12,6 @@ model Generation {
   jobDesc    String
   experience String
   resultJson String
+  applyUrl   String?
+  specialInstructions String?
 }

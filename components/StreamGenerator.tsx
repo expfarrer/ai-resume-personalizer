@@ -1,14 +1,19 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import ResumeResultPanel, { PanelOutput } from "./ResumeResultPanel";
 
-type Output = {
-  summary: string;
-  resumeBullets: string[];
-  interviewQuestions: string[];
-};
+type Output = PanelOutput;
 
 type Mode = "json" | "stream";
+type Provider = "openai" | "claude";
+
+const PROVIDER_LABEL: Record<Provider, string> = {
+  openai: "ChatGPT",
+  claude: "Claude",
+};
+
+type ProviderResult = { output: Output; applyUrl: string | null; jobDescText: string };
 
 type HistoryItem = {
   id: string;
@@ -16,14 +21,32 @@ type HistoryItem = {
   jobDesc: string;
   experience: string;
   resultJson: string;
+  applyUrl: string | null;
+  specialInstructions: string | null;
 };
 
-function isOutput(x: any): x is Output {
+const SAVED_RESUME_KEY = "arp:savedResume";
+const SPECIAL_INSTRUCTIONS_KEY = "arp:specialInstructions";
+
+type SavedResume = { text: string; name: string; savedAt: string };
+
+function isSavedResume(x: unknown): x is SavedResume {
+  if (typeof x !== "object" || x === null) return false;
+  const r = x as Record<string, unknown>;
   return (
-    x &&
-    typeof x.summary === "string" &&
-    Array.isArray(x.resumeBullets) &&
-    Array.isArray(x.interviewQuestions)
+    typeof r.text === "string" &&
+    typeof r.name === "string" &&
+    typeof r.savedAt === "string"
+  );
+}
+
+function isOutput(x: unknown): x is Output {
+  if (typeof x !== "object" || x === null) return false;
+  const r = x as Record<string, unknown>;
+  return (
+    typeof r.adaptationNotes === "string" &&
+    typeof r.tailoredResume === "string" &&
+    Array.isArray(r.interviewQuestions)
   );
 }
 
@@ -40,28 +63,94 @@ function previewText(s: string, n = 56) {
 
 export default function StreamGenerator() {
   const [mode, setMode] = useState<Mode>("json");
-  const [jobDesc, setJobDesc] = useState("");
-  const [experience, setExperience] = useState("");
+  const [useOpenAI, setUseOpenAI] = useState(true);
+  const [useClaude, setUseClaude] = useState(false);
+
+  const [jobUrl, setJobUrl] = useState("");
+  const [jobText, setJobText] = useState("");
+  const [showJobUrlField, setShowJobUrlField] = useState(false);
+
+  const [resumeUrl, setResumeUrl] = useState("");
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
+  const [resumeText, setResumeText] = useState("");
+  const [showResumeAlt, setShowResumeAlt] = useState(false);
+  const resumeFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [specialInstructions, setSpecialInstructions] = useState("");
+
+  const [savedResume, setSavedResume] = useState<SavedResume | null>(null);
+
   const [loading, setLoading] = useState(false);
 
-  const [raw, setRaw] = useState("");
-  const [output, setOutput] = useState<Output | null>(null);
+  const [results, setResults] = useState<Partial<Record<Provider, ProviderResult>>>({});
+  const [resultErrors, setResultErrors] = useState<Partial<Record<Provider, string>>>({});
+  const [historyResult, setHistoryResult] = useState<ProviderResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [source, setSource] = useState<string>("—");
   const [contentType, setContentType] = useState<string>("—");
-
-  const [copyStatus, setCopyStatus] = useState<string>("");
 
   // History
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
 
   const controllerRef = useRef<AbortController | null>(null);
 
-  const canRun = jobDesc.trim().length > 0 && experience.trim().length > 0;
+  const jobReady = jobText.trim().length > 0 || jobUrl.trim().length > 0;
+  const hasNewResumeInput =
+    resumeUrl.trim().length > 0 || !!resumeFile || resumeText.trim().length > 0;
+  const willUseSavedResume = !hasNewResumeInput && !!savedResume;
+  const resumeReady = hasNewResumeInput || willUseSavedResume;
+  const anyProviderSelected = useOpenAI || useClaude;
+
+  const canRun = jobReady && resumeReady && anyProviderSelected;
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(SAVED_RESUME_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (isSavedResume(parsed)) setSavedResume(parsed);
+      }
+    } catch {
+      // localStorage unavailable, or a stale value from a previous format —
+      // saved-resume reuse simply won't work until a fresh run saves one.
+    }
+
+    try {
+      const storedInstructions = window.localStorage.getItem(
+        SPECIAL_INSTRUCTIONS_KEY,
+      );
+      if (storedInstructions) setSpecialInstructions(storedInstructions);
+    } catch {
+      // localStorage unavailable — special instructions won't persist.
+    }
+  }, []);
+
+  function persistSavedResume(next: SavedResume) {
+    setSavedResume(next);
+    try {
+      window.localStorage.setItem(SAVED_RESUME_KEY, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  }
+
+  function updateSpecialInstructions(next: string) {
+    setSpecialInstructions(next);
+    try {
+      if (next.trim()) {
+        window.localStorage.setItem(SPECIAL_INSTRUCTIONS_KEY, next);
+      } else {
+        window.localStorage.removeItem(SPECIAL_INSTRUCTIONS_KEY);
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   function stop() {
     controllerRef.current?.abort();
@@ -70,64 +159,36 @@ export default function StreamGenerator() {
   }
 
   function clearAll() {
-    setJobDesc("");
-    setExperience("");
-    setRaw("");
-    setOutput(null);
+    setJobUrl("");
+    setJobText("");
+    setShowJobUrlField(false);
+    setResumeUrl("");
+    setResumeFile(null);
+    if (resumeFileInputRef.current) resumeFileInputRef.current.value = "";
+    setResumeText("");
+    setShowResumeAlt(false);
+    setSpecialInstructions("");
+    try {
+      window.localStorage.removeItem(SPECIAL_INSTRUCTIONS_KEY);
+    } catch {
+      // ignore
+    }
+    setResults({});
+    setResultErrors({});
+    setHistoryResult(null);
     setError(null);
     setSource("—");
     setContentType("—");
-    setCopyStatus("");
     setActiveHistoryId(null);
   }
 
-  function setStatusTemp(msg: string) {
-    setCopyStatus(msg);
-    window.setTimeout(() => setCopyStatus(""), 1500);
-  }
-
-  async function copyText(label: string, text: string) {
+  function forgetSavedResume() {
+    setSavedResume(null);
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        setStatusTemp(`${label} copied`);
-        return;
-      }
-
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "true");
-      ta.style.position = "absolute";
-      ta.style.left = "-9999px";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-
-      setStatusTemp(`${label} copied`);
-    } catch (e: any) {
-      setStatusTemp(`Copy failed: ${e?.message ?? "permission denied"}`);
+      window.localStorage.removeItem(SAVED_RESUME_KEY);
+    } catch {
+      // ignore
     }
-  }
-
-  function buildMarkdown(out: Output) {
-    const bullets = out.resumeBullets.map((b) => `- ${b}`).join("\n");
-    const questions = out.interviewQuestions.map((q) => `1. ${q}`).join("\n");
-
-    return [
-      `## Summary`,
-      ``,
-      out.summary.trim(),
-      ``,
-      `## Resume Bullets`,
-      ``,
-      bullets,
-      ``,
-      `## Interview Questions`,
-      ``,
-      questions,
-      ``,
-    ].join("\n");
   }
 
   async function fetchHistory() {
@@ -140,8 +201,8 @@ export default function StreamGenerator() {
       setHistory(
         Array.isArray(json?.items) ? (json.items as HistoryItem[]) : [],
       );
-    } catch (e: any) {
-      setHistoryError(e?.message ?? "Failed to load history");
+    } catch (e: unknown) {
+      setHistoryError(e instanceof Error ? e.message : "Failed to load history");
     } finally {
       setHistoryLoading(false);
     }
@@ -149,27 +210,40 @@ export default function StreamGenerator() {
 
   function loadFromHistory(item: HistoryItem) {
     setActiveHistoryId(item.id);
-    setJobDesc(item.jobDesc ?? "");
-    setExperience(item.experience ?? "");
+
+    setJobUrl("");
+    setJobText(item.jobDesc ?? "");
+
+    setResumeUrl("");
+    setResumeFile(null);
+    if (resumeFileInputRef.current) resumeFileInputRef.current.value = "";
+    setResumeText(item.experience ?? "");
+    setShowResumeAlt(true);
+
+    setSpecialInstructions(item.specialInstructions ?? "");
+
+    setResults({});
+    setResultErrors({});
 
     try {
       const parsed = JSON.parse(item.resultJson);
       if (isOutput(parsed)) {
-        setOutput(parsed);
-        setRaw(JSON.stringify(parsed, null, 2));
+        setHistoryResult({
+          output: parsed,
+          applyUrl: item.applyUrl ?? null,
+          jobDescText: item.jobDesc ?? "",
+        });
         setError(null);
         setSource("Loaded from history");
         setContentType("—");
       } else {
-        setOutput(null);
-        setRaw(item.resultJson);
+        setHistoryResult(null);
         setError(
           "History item resultJson did not match expected Output shape.",
         );
       }
     } catch {
-      setOutput(null);
-      setRaw(item.resultJson);
+      setHistoryResult(null);
       setError("Failed to parse history resultJson.");
     }
   }
@@ -178,158 +252,474 @@ export default function StreamGenerator() {
     fetchHistory();
   }, []);
 
+  async function runOneProvider(provider: Provider, signal: AbortSignal) {
+    const formData = new FormData();
+    formData.append("provider", provider);
+    if (jobText.trim()) formData.append("jobText", jobText.trim());
+    else if (jobUrl.trim()) formData.append("jobUrl", jobUrl.trim());
+
+    if (specialInstructions.trim()) {
+      formData.append("specialInstructions", specialInstructions.trim());
+    }
+
+    let newResumeSourceName: string | null = null;
+    if (resumeFile) {
+      formData.append("resumeFile", resumeFile);
+      newResumeSourceName = resumeFile.name;
+    } else if (resumeUrl.trim()) {
+      formData.append("resumeUrl", resumeUrl.trim());
+      newResumeSourceName = resumeUrl.trim();
+    } else if (resumeText.trim()) {
+      formData.append("resumeText", resumeText.trim());
+      newResumeSourceName = "Pasted text";
+    } else if (savedResume) {
+      formData.append("resumeText", savedResume.text);
+    }
+
+    const url = mode === "stream" ? "/api/generate?stream=true" : "/api/generate";
+    const res = await fetch(url, { method: "POST", body: formData, signal });
+    const ct = (res.headers.get("content-type") ?? "").toLowerCase();
+
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => null);
+      const code = errJson?.error as string | undefined;
+      const message = errJson?.message ?? errJson?.error ?? `HTTP ${res.status}`;
+      throw Object.assign(new Error(message), { code });
+    }
+
+    let output: Output;
+    let applyUrl: string | null = null;
+    let resumeTextEcho: string | undefined;
+    let jobDescTextEcho = jobText.trim();
+
+    if (mode === "json") {
+      const json = (await res.json()) as Record<string, unknown>;
+      const candidate = (json?.result ?? json) as Output;
+      if (!isOutput(candidate)) {
+        throw new Error("JSON response did not match expected Output shape.");
+      }
+      output = candidate;
+      applyUrl = typeof json?.applyUrl === "string" ? json.applyUrl : null;
+      resumeTextEcho =
+        typeof json?.resumeText === "string" ? json.resumeText : undefined;
+      if (typeof json?.jobDescText === "string" && json.jobDescText.trim()) {
+        jobDescTextEcho = json.jobDescText;
+      }
+    } else {
+      const text = await res.text();
+      const parsed = JSON.parse(text);
+      if (!isOutput(parsed)) {
+        throw new Error(
+          "Stream selected but JSON response did not match Output shape.",
+        );
+      }
+      output = parsed;
+    }
+
+    return {
+      output,
+      applyUrl,
+      contentType: ct,
+      jobDescText: jobDescTextEcho,
+      resumeSave:
+        newResumeSourceName && resumeTextEcho
+          ? { text: resumeTextEcho, name: newResumeSourceName }
+          : null,
+    };
+  }
+
   async function run() {
     setError(null);
-    setOutput(null);
-    setRaw("");
+    setResults({});
+    setResultErrors({});
+    setHistoryResult(null);
     setSource("—");
     setContentType("—");
-    setCopyStatus("");
     setLoading(true);
 
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
 
-    const url =
-      mode === "stream" ? "/api/generate?stream=true" : "/api/generate";
+    const selected: Provider[] = [
+      ...(useOpenAI ? (["openai"] as const) : []),
+      ...(useClaude ? (["claude"] as const) : []),
+    ];
 
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        body: JSON.stringify({ jobDesc, experience }),
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-      });
+    const settled = await Promise.allSettled(
+      selected.map((p) => runOneProvider(p, controller.signal)),
+    );
 
-      const ct = (res.headers.get("content-type") ?? "").toLowerCase();
-      setContentType(ct || "—");
+    const newResults: Partial<Record<Provider, ProviderResult>> = {};
+    const newErrors: Partial<Record<Provider, string>> = {};
+    let latestResumeSave: { text: string; name: string } | null = null;
+    let latestContentType = "—";
+    let aborted = false;
 
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`HTTP ${res.status}: ${text}`);
-      }
-
-      if (mode === "json") {
-        setSource("JSON (non-stream endpoint)");
-        const json = (await res.json()) as any;
-        const candidate = (json?.result ?? json) as Output;
-
-        if (!isOutput(candidate)) {
-          setRaw(JSON.stringify(json, null, 2));
-          throw new Error("JSON response did not match expected Output shape.");
+    settled.forEach((settledResult, i) => {
+      const p = selected[i];
+      if (settledResult.status === "fulfilled") {
+        newResults[p] = {
+          output: settledResult.value.output,
+          applyUrl: settledResult.value.applyUrl,
+          jobDescText: settledResult.value.jobDescText,
+        };
+        if (settledResult.value.resumeSave) {
+          latestResumeSave = settledResult.value.resumeSave;
         }
-
-        setOutput(candidate);
-        setRaw(JSON.stringify(candidate, null, 2));
-        setActiveHistoryId(null);
+        latestContentType = settledResult.value.contentType || latestContentType;
       } else {
-        setSource("Stream (mode selected)");
-
-        const text = await res.text();
-        setRaw(text);
-
-        const parsed = JSON.parse(text);
-        if (!isOutput(parsed)) {
-          throw new Error(
-            "Stream selected but JSON response did not match Output shape.",
-          );
+        const err = settledResult.reason;
+        if (err?.name === "AbortError") aborted = true;
+        const code = err?.code as string | undefined;
+        if (code === "JD_FETCH_BLOCKED" || code === "JD_RESOLUTION_FAILED") {
+          setShowJobUrlField(true);
         }
-
-        setSource("Stream selected, server returned JSON");
-        setOutput(parsed);
-        setActiveHistoryId(null);
+        if (code === "RESUME_FETCH_BLOCKED" || code === "RESUME_RESOLUTION_FAILED") {
+          setShowResumeAlt(true);
+        }
+        newErrors[p] = err?.message ?? String(err);
       }
-    } catch (err: any) {
-      if (err?.name === "AbortError") setError("Request stopped.");
-      else setError(err?.message ?? String(err));
-    } finally {
-      setLoading(false);
-      controllerRef.current = null;
-      fetchHistory();
+    });
+
+    setResults(newResults);
+    setResultErrors(newErrors);
+    setContentType(latestContentType);
+    setSource(selected.map((p) => PROVIDER_LABEL[p]).join(" + ") || "—");
+
+    if (aborted) {
+      setError("Request stopped.");
+    } else if (Object.keys(newResults).length === 0 && Object.keys(newErrors).length > 0) {
+      setError(Object.values(newErrors)[0] ?? "Generation failed.");
     }
+
+    const resumeSaveToPersist = latestResumeSave as { text: string; name: string } | null;
+    if (resumeSaveToPersist) {
+      persistSavedResume({
+        text: resumeSaveToPersist.text,
+        name: resumeSaveToPersist.name,
+        savedAt: new Date().toISOString(),
+      });
+    }
+
+    setLoading(false);
+    controllerRef.current = null;
+    fetchHistory();
   }
 
+  const resultCount = Object.keys(results).length;
+
   return (
-    <section className="space-y-5">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
-            Generator
-          </h2>
-          <p className="text-sm text-slate-700 dark:text-slate-300">
-            One input. Choose mode. Run.
-          </p>
+    <section className="space-y-4">
+      <header className="space-y-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
+              Generator
+            </h2>
+            <p className="text-sm text-slate-700 dark:text-slate-300">
+              Paste the job description, use your saved résumé (or upload
+              once), hit Generate.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+              Source: <span className="ml-1 font-semibold">{source}</span>
+            </span>
+
+            <span
+              title={contentType}
+              className="inline-flex max-w-[28rem] items-center truncate rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+            >
+              Content-Type:{" "}
+              <span className="ml-1 font-semibold">{contentType}</span>
+            </span>
+
+            <button
+              type="button"
+              onClick={() => setShowHistory((v) => !v)}
+              className="inline-flex items-center rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              History ({history.length}) {showHistory ? "▲" : "▼"}
+            </button>
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
-            Source: <span className="ml-1 font-semibold">{source}</span>
-          </span>
+        {showHistory && (
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-xs text-slate-600 dark:text-slate-300">
+                Last 10 generations — click one to load it.
+              </div>
+              <button
+                onClick={fetchHistory}
+                disabled={historyLoading}
+                className="h-8 rounded-lg bg-slate-200 px-3 text-xs font-semibold text-black shadow-sm hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
+              >
+                {historyLoading ? "Loading…" : "Refresh"}
+              </button>
+            </div>
 
-          <span
-            title={contentType}
-            className="inline-flex max-w-[28rem] items-center truncate rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-          >
-            Content-Type:{" "}
-            <span className="ml-1 font-semibold">{contentType}</span>
-          </span>
-        </div>
+            {historyError && (
+              <div className="mt-2 text-sm text-rose-700 dark:text-rose-200">
+                {historyError}
+              </div>
+            )}
+
+            <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+              {history.length === 0 && !historyLoading ? (
+                <div className="text-sm text-slate-600 dark:text-slate-300">
+                  No saved generations yet.
+                </div>
+              ) : null}
+
+              {history.map((item) => {
+                const active = item.id === activeHistoryId;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => loadFromHistory(item)}
+                    className={[
+                      "w-64 shrink-0 rounded-2xl border px-3 py-2 text-left shadow-sm",
+                      "hover:bg-slate-50 dark:hover:bg-slate-800/40",
+                      active
+                        ? "border-slate-500 bg-slate-50 dark:border-slate-400 dark:bg-slate-800/40"
+                        : "border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900",
+                    ].join(" ")}
+                  >
+                    <div className="text-xs font-semibold text-slate-900 dark:text-slate-100">
+                      {formatWhen(item.createdAt)}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-700 dark:text-slate-300">
+                      JD: {previewText(item.jobDesc, 44)}
+                    </div>
+                    {item.applyUrl && (
+                      <div className="mt-1 text-xs text-emerald-700 dark:text-emerald-300">
+                        🔗 Apply link saved
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </header>
 
-      <div className="grid gap-4 lg:grid-cols-12">
-        {/* Main content FIRST (left) */}
-        <div className="lg:col-span-8 space-y-4">
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="grid gap-4 lg:grid-cols-2">
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
-                <div className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  Job description
+      <div className="space-y-4">
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* Job description — paste-first, since most postings block scraping */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  1. Job description
                 </div>
-                <textarea
-                  value={jobDesc}
-                  onChange={(e) => setJobDesc(e.target.value)}
-                  rows={12}
-                  placeholder="Paste job description..."
-                  className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400"
-                />
+                <span
+                  className={
+                    jobReady
+                      ? "text-xs font-semibold text-emerald-600 dark:text-emerald-400"
+                      : "text-xs text-slate-500 dark:text-slate-400"
+                  }
+                >
+                  {jobReady ? "✓ Ready" : "Needed"}
+                </span>
               </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
-                <div className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  Experience bullets
-                </div>
-                <textarea
-                  value={experience}
-                  onChange={(e) => setExperience(e.target.value)}
-                  rows={12}
-                  placeholder={"- Led ...\n- Built ..."}
-                  className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400"
+              <textarea
+                value={jobText}
+                onChange={(e) => setJobText(e.target.value)}
+                rows={8}
+                placeholder="Paste the job description text here — most job sites block automated scraping, so this is the reliable way in."
+                className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400"
+              />
+
+              <button
+                type="button"
+                onClick={() => setShowJobUrlField((v) => !v)}
+                className="mt-2 text-xs font-medium text-slate-600 underline underline-offset-4 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
+              >
+                {showJobUrlField
+                  ? "Hide link option"
+                  : "Have a link instead? (works for some sites)"}
+              </button>
+
+              {showJobUrlField && (
+                <input
+                  type="url"
+                  value={jobUrl}
+                  onChange={(e) => setJobUrl(e.target.value)}
+                  placeholder="https://... (JD PDF link or job page — falls back to the text above if this fails)"
+                  className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400"
                 />
+              )}
+            </div>
+
+            {/* Résumé — upload-once, reused across sessions */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  2. Your résumé
+                </div>
+                <span
+                  className={
+                    resumeReady
+                      ? "text-xs font-semibold text-emerald-600 dark:text-emerald-400"
+                      : "text-xs text-slate-500 dark:text-slate-400"
+                  }
+                >
+                  {resumeReady ? "✓ Ready" : "Needed"}
+                </span>
+              </div>
+
+              {willUseSavedResume ? (
+                <div className="mb-3 flex items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-100">
+                  <span className="truncate">
+                    ✓ {previewText(savedResume!.name, 40)} — last used{" "}
+                    {formatWhen(savedResume!.savedAt)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={forgetSavedResume}
+                    className="shrink-0 font-semibold underline underline-offset-2"
+                  >
+                    Replace
+                  </button>
+                </div>
+              ) : (
+                <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+                  {savedResume
+                    ? `New résumé below will replace "${savedResume.name}" (last used ${formatWhen(savedResume.savedAt)}) after this run.`
+                    : "Upload your résumé PDF once — it's saved in this browser and reused automatically next time."}
+                </div>
+              )}
+
+              <input
+                ref={resumeFileInputRef}
+                type="file"
+                accept=".pdf,application/pdf"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  setResumeFile(f);
+                  if (f) setResumeUrl("");
+                }}
+                className="w-full text-xs text-slate-700 file:mr-2 file:rounded-lg file:border-0 file:bg-slate-200 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-black hover:file:bg-slate-300 dark:text-slate-300"
+              />
+
+              <button
+                type="button"
+                onClick={() => setShowResumeAlt((v) => !v)}
+                className="mt-2 text-xs font-medium text-slate-600 underline underline-offset-4 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
+              >
+                {showResumeAlt
+                  ? "Hide link/paste options"
+                  : "Prefer a link or paste instead?"}
+              </button>
+
+              {showResumeAlt && (
+                <div className="mt-2 space-y-2">
+                  <input
+                    type="url"
+                    value={resumeUrl}
+                    onChange={(e) => {
+                      setResumeUrl(e.target.value);
+                      if (e.target.value) {
+                        setResumeFile(null);
+                        if (resumeFileInputRef.current)
+                          resumeFileInputRef.current.value = "";
+                      }
+                    }}
+                    placeholder="https://... (link to resume PDF)"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400"
+                  />
+                  <textarea
+                    value={resumeText}
+                    onChange={(e) => setResumeText(e.target.value)}
+                    rows={5}
+                    placeholder={"Or paste résumé text...\n- Led ...\n- Built ..."}
+                    className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
+            <div className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
+              3. Special instructions{" "}
+              <span className="font-normal text-slate-500 dark:text-slate-400">
+                (optional)
+              </span>
+            </div>
+            <textarea
+              value={specialInstructions}
+              onChange={(e) => updateSpecialInstructions(e.target.value)}
+              rows={2}
+              placeholder={
+                "e.g. use Toby instead of Tobias; swap the GitHub link for github.com/...; lead with the remote-team experience"
+              }
+              className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400"
+            />
+            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Applied on top of the JD-matching — the AI will confirm how each
+              instruction was used in the &quot;How this was tailored&quot; note. Saved
+              in this browser, so it&apos;s still here after a restart — click
+              Clear to remove it.
+            </div>
+          </div>
+
+          <div className="mt-5 flex flex-wrap items-center gap-4 border-t border-slate-200 pt-4 dark:border-slate-800">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                Mode
+              </span>
+              <select
+                value={mode}
+                onChange={(e) => setMode(e.target.value as Mode)}
+                className="h-10 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              >
+                <option value="json">JSON (non-stream)</option>
+                <option value="stream">Stream (stream=true)</option>
+              </select>
+            </label>
+
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                AI Provider{" "}
+                <span className="font-normal text-slate-500 dark:text-slate-400">
+                  (check both to compare)
+                </span>
+              </span>
+              <div className="flex h-10 items-center gap-4">
+                <label className="inline-flex items-center gap-1.5 text-sm text-slate-800 dark:text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={useOpenAI}
+                    onChange={(e) => setUseOpenAI(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 dark:border-slate-700"
+                  />
+                  ChatGPT
+                </label>
+                <label className="inline-flex items-center gap-1.5 text-sm text-slate-800 dark:text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={useClaude}
+                    onChange={(e) => setUseClaude(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 dark:border-slate-700"
+                  />
+                  Claude
+                </label>
               </div>
             </div>
 
-            <div className="mt-4 flex flex-wrap items-end gap-3">
-              <label className="flex flex-col gap-1">
-                <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                  Mode
-                </span>
-                <select
-                  value={mode}
-                  onChange={(e) => setMode(e.target.value as Mode)}
-                  className="h-10 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                >
-                  <option value="json">JSON (non-stream)</option>
-                  <option value="stream">Stream (stream=true)</option>
-                </select>
-              </label>
-
+            <div className="flex flex-1 flex-wrap items-center gap-3">
               <button
                 onClick={run}
                 disabled={loading || !canRun}
-                className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
+                className="h-12 rounded-xl bg-indigo-600 px-6 text-base font-bold text-white shadow-md hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 disabled:shadow-none dark:disabled:bg-slate-800 dark:disabled:text-slate-500"
               >
-                {loading ? "Running..." : "Run"}
+                {loading ? "Generating…" : "Generate"}
               </button>
 
               <button
@@ -348,177 +738,89 @@ export default function StreamGenerator() {
                 Clear
               </button>
 
-              {output && (
-                <div className="flex flex-wrap gap-2 sm:ml-auto">
-                  <button
-                    onClick={() => copyText("Summary", output.summary)}
-                    className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
-                  >
-                    Copy Summary
-                  </button>
-
-                  <button
-                    onClick={() =>
-                      copyText("Bullets", output.resumeBullets.join("\n"))
-                    }
-                    className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
-                  >
-                    Copy Bullets
-                  </button>
-
-                  <button
-                    onClick={() => copyText("Markdown", buildMarkdown(output))}
-                    className="h-10 rounded-xl bg-slate-200 px-4 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
-                  >
-                    Copy All as Markdown
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {copyStatus && (
-              <div className="mt-3 inline-flex items-center rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
-                {copyStatus}
-              </div>
-            )}
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-              <div className="mb-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
-                Raw response
-              </div>
-              <pre className="max-h-[420px] overflow-auto rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-900 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100">
-                {raw || "(waiting...)"}
-              </pre>
-            </div>
-
-            <div className="space-y-4">
-              {error && (
-                <div className="rounded-3xl border border-rose-200 bg-rose-50 p-5 shadow-sm dark:border-rose-900/50 dark:bg-rose-950/40">
-                  <div className="text-sm font-semibold text-rose-900 dark:text-rose-100">
-                    Error
-                  </div>
-                  <pre className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-rose-900 dark:text-rose-100">
-                    {error}
-                  </pre>
-                </div>
-              )}
-
-              {output && (
-                <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                  <div className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">
-                    Parsed output
-                  </div>
-
-                  <div className="space-y-4">
-                    <div>
-                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
-                        Summary
-                      </div>
-                      <p className="mt-2 whitespace-pre-wrap text-sm text-slate-900 dark:text-slate-100">
-                        {output.summary}
-                      </p>
-                    </div>
-
-                    <div>
-                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
-                        Resume bullets
-                      </div>
-                      <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-900 dark:text-slate-100">
-                        {output.resumeBullets.map((b, i) => (
-                          <li key={i}>{b}</li>
-                        ))}
-                      </ul>
-                    </div>
-
-                    <div>
-                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
-                        Interview questions
-                      </div>
-                      <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-slate-900 dark:text-slate-100">
-                        {output.interviewQuestions.map((q, i) => (
-                          <li key={i}>{q}</li>
-                        ))}
-                      </ol>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {!error && !output && (
-                <div className="rounded-3xl border border-slate-200 bg-white p-5 text-sm text-slate-700 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
-                  Choose a mode and click Run to see results.
-                </div>
-              )}
+              <span className="text-xs text-slate-600 dark:text-slate-300">
+                {loading
+                  ? "Fetching sources and calling the AI — this can take 10-30s."
+                  : !canRun
+                    ? "Waiting on: " +
+                      [
+                        !jobReady && "job description",
+                        !resumeReady && "résumé",
+                        !anyProviderSelected && "an AI provider",
+                      ]
+                        .filter(Boolean)
+                        .join(" and ")
+                    : "Ready to generate."}
+              </span>
             </div>
           </div>
         </div>
 
-        {/* History sidebar SECOND (right) */}
-        <aside className="lg:col-span-4 lg:border-l lg:border-slate-200 lg:pl-4 dark:lg:border-slate-800">
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  History
-                </div>
-                <div className="text-xs text-slate-600 dark:text-slate-300">
-                  Last 10 generations
-                </div>
-              </div>
-
-              <button
-                onClick={fetchHistory}
-                disabled={historyLoading}
-                className="h-9 rounded-xl bg-slate-200 px-3 text-sm font-semibold text-black shadow-sm hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-200 dark:text-black dark:hover:bg-slate-300"
-              >
-                {historyLoading ? "Loading…" : "Refresh"}
-              </button>
+        {error && (
+          <div className="rounded-3xl border border-rose-200 bg-rose-50 p-5 shadow-sm dark:border-rose-900/50 dark:bg-rose-950/40">
+            <div className="text-sm font-semibold text-rose-900 dark:text-rose-100">
+              Error
             </div>
-
-            {historyError && (
-              <div className="mt-3 text-sm text-rose-700 dark:text-rose-200">
-                {historyError}
-              </div>
-            )}
-
-            <div className="mt-4 space-y-2">
-              {history.length === 0 && !historyLoading ? (
-                <div className="text-sm text-slate-600 dark:text-slate-300">
-                  No saved generations yet.
-                </div>
-              ) : null}
-
-              {history.map((item) => {
-                const active = item.id === activeHistoryId;
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => loadFromHistory(item)}
-                    className={[
-                      "w-full rounded-2xl border px-3 py-3 text-left shadow-sm",
-                      "hover:bg-slate-50 dark:hover:bg-slate-800/40",
-                      active
-                        ? "border-slate-500 bg-slate-50 dark:border-slate-400 dark:bg-slate-800/40"
-                        : "border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900",
-                    ].join(" ")}
-                  >
-                    <div className="text-xs font-semibold text-slate-900 dark:text-slate-100">
-                      {formatWhen(item.createdAt)}
-                    </div>
-                    <div className="mt-1 text-xs text-slate-700 dark:text-slate-300">
-                      JD: {previewText(item.jobDesc)}
-                    </div>
-                    <div className="mt-1 text-xs text-slate-700 dark:text-slate-300">
-                      EXP: {previewText(item.experience)}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+            <pre className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-rose-900 dark:text-rose-100">
+              {error}
+            </pre>
           </div>
-        </aside>
+        )}
+
+        {(Object.entries(resultErrors) as [Provider, string][]).map(
+          ([p, msg]) =>
+            results[p] ? null : (
+              <div
+                key={p}
+                className="rounded-3xl border border-rose-200 bg-rose-50 p-5 shadow-sm dark:border-rose-900/50 dark:bg-rose-950/40"
+              >
+                <div className="text-sm font-semibold text-rose-900 dark:text-rose-100">
+                  {PROVIDER_LABEL[p]} error
+                </div>
+                <pre className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-rose-900 dark:text-rose-100">
+                  {msg}
+                </pre>
+              </div>
+            ),
+        )}
+
+        {/* Output — front and center: editable tailored resume document(s) */}
+        {historyResult && (
+          <ResumeResultPanel
+            providerLabel="History"
+            output={historyResult.output}
+            applyUrl={historyResult.applyUrl}
+            jobDescText={historyResult.jobDescText}
+          />
+        )}
+
+        {resultCount > 0 && (
+          <div className="space-y-4">
+            {results.openai && (
+              <ResumeResultPanel
+                providerLabel="ChatGPT"
+                output={results.openai.output}
+                applyUrl={results.openai.applyUrl}
+                jobDescText={results.openai.jobDescText}
+              />
+            )}
+            {results.claude && (
+              <ResumeResultPanel
+                providerLabel="Claude"
+                output={results.claude.output}
+                applyUrl={results.claude.applyUrl}
+                jobDescText={results.claude.jobDescText}
+              />
+            )}
+          </div>
+        )}
+
+        {!error && resultCount === 0 && !historyResult && (
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 text-sm text-slate-700 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+            Fill in the job description and résumé above, then click
+            Generate.
+          </div>
+        )}
       </div>
     </section>
   );

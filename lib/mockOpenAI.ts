@@ -2,23 +2,144 @@
 // Deterministic mock output + two streaming helpers:
 // - mockStreamingJson: yields chunks of raw JSON (useful for simple stream tests)
 // - mockNdjsonStream: yields NDJSON {type:"chunk", text:"..."}\n lines (used by NDJSON client)
+//
+// Provider-aware on purpose: the two mocks are deliberately different in
+// length/structure (not just relabeled) so compare mode's UI — two panels
+// side by side — has something real to render and differentiate while
+// testing, without spending real API calls.
 
 import { Output } from "./schema";
 
-/**
- * Deterministic mock that matches Output shape.
- */
-export function makeMockOutput(jobDesc: string, experience: string): Output {
-  const summary = `Experienced engineering leader with hands-on
-experience building scalable web platforms aligned to product goals.`;
+export type MockProvider = "openai" | "claude";
 
-  const resumeBullets = [
-    "Led a 6-person team to deliver a React/Next product, improving conversion by 18%.",
-    "Designed CI/CD pipelines reducing deploy time by 75%.",
-    "Migrated JS to TypeScript, reducing runtime errors and improving DX.",
-    "Added observability and SLOs for Tier-1 services, lowering MTTR.",
-    "Mentored engineers and shortened onboarding from 4 weeks to 1 week.",
-  ];
+function deriveRoleTitle(jobDesc: string): string {
+  return (
+    jobDesc
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0)
+      ?.slice(0, 60) || "Target Role"
+  );
+}
+
+function deriveCandidateName(experience: string): string {
+  const firstLine = experience
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.length > 0 && l.length < 40);
+  return firstLine || "Jordan Candidate";
+}
+
+/**
+ * Deterministic mock that matches Output shape. Varies noticeably by
+ * provider so the two compare-mode panels don't render identical content.
+ */
+export function makeMockOutput(
+  jobDesc: string,
+  experience: string,
+  provider: MockProvider = "openai",
+): Output {
+  const roleTitle = deriveRoleTitle(jobDesc);
+  const name = deriveCandidateName(experience);
+  const company = "Sample Company";
+
+  if (provider === "claude") {
+    const adaptationNotes = `Reordered Professional Experience to lead with cloud migration and platform-scaling work, since the JD emphasizes both. Expanded Technical Skills to explicitly name AWS, Kubernetes, and CI/CD using the JD's own terminology for keyword matching. Added a Notable Projects section since the source resume mentions a couple of named side projects worth calling out separately. No employers, dates, or metrics were invented — everything below is reorganized from the source resume only.`;
+
+    const tailoredResume = `${name}
+jordan.candidate@example.com | (555) 123-4567 | Boston, MA | linkedin.com/in/jordancandidate
+
+## Technical Skills
+
+Leadership: Team Building, Mentoring, Roadmapping, Stakeholder Management; Cloud and Infrastructure: AWS, Kubernetes, Docker, CI/CD; Languages and Frameworks: JavaScript, TypeScript, React, Next.js, Node.js
+
+## Professional Summary
+
+Engineering leader with hands-on experience scaling cloud-native platforms and leading distributed teams, tailored to this role's platform and developer-tooling focus.
+
+## Professional Experience
+
+### Engineering Manager | Sample Company, Boston, MA - Jan 2023 - Present
+
+- Led a 6-person team to deliver a React/Next product, improving conversion by 18%.
+- Designed CI/CD pipelines reducing deploy time by 75%.
+- Migrated JS to TypeScript, reducing runtime errors and improving DX.
+- Added observability and SLOs for Tier-1 services, lowering MTTR.
+- Mentored engineers and shortened onboarding from 4 weeks to 1 week.
+
+### Senior Engineer | Prior Company, Boston, MA - Jun 2020 - Dec 2022
+
+- Migrated legacy services to containerized infrastructure on AWS.
+- Established CI/CD conventions adopted across three teams.
+
+## Career Highlights
+
+- Recognized for cross-functional leadership and measurable delivery impact.
+- Reduced onboarding time company-wide through shared tooling and documentation.
+
+## Notable Projects
+
+- Internal Developer Portal: self-serve platform for provisioning cloud resources, cutting environment setup time from days to hours.
+
+## Education
+
+B.Sc., Computer Science | Sample University`;
+
+    const interviewQuestions = [
+      "Describe a time you reduced technical debt while delivering features.",
+      "How do you measure team velocity and engineer impact?",
+      "Explain an architectural trade-off you recently made.",
+      "How would you onboard a new senior engineer in month one?",
+      "Tell me about a production incident you led.",
+      "What observability signals do you track for user-facing services?",
+      "Describe your approach to cross-team communication.",
+      "How do you prioritize feature requests from product stakeholders?",
+      "Explain your experience migrating a codebase to TypeScript.",
+      "Give an example of successful mentorship you've run.",
+      "Walk me through how you'd design a CI/CD pipeline from scratch.",
+      "How do you decide what belongs in an internal developer platform?",
+    ];
+
+    return { company, roleTitle, adaptationNotes, tailoredResume, interviewQuestions };
+  }
+
+  // openai mock: shorter and more concise, mirroring the real difference
+  // observed between providers this session.
+  const adaptationNotes = `Reordered Technical Skills to lead with Cloud and Infrastructure to match this role's platform focus.
+Emphasized team-scaling and mentorship bullets that map to the JD's leadership requirements.
+Moved CI/CD and observability achievements higher since the JD calls out platform reliability.`;
+
+  const tailoredResume = `${name}
+jordan.candidate@example.com | (555) 123-4567 | Boston, MA | linkedin.com/in/jordancandidate
+Engineering Leader | Platform Engineering | Developer Experience
+
+## Technical Skills
+
+Leadership: Team Building, Mentoring, Roadmapping, Stakeholder Management
+Languages and Frameworks: JavaScript, TypeScript, React, Next.js, Node.js
+Cloud and Infrastructure: AWS, Docker, Kubernetes, CI/CD
+
+## Professional Summary
+
+Experienced engineering leader with hands-on experience building scalable web platforms, tailored to the target role.
+
+## Professional Experience
+
+### Engineering Manager | Sample Company, Boston, MA - Jan 2023 - Present
+
+- Led a 6-person team to deliver a React/Next product, improving conversion by 18%.
+- Designed CI/CD pipelines reducing deploy time by 75%.
+- Migrated JS to TypeScript, reducing runtime errors and improving DX.
+- Added observability and SLOs for Tier-1 services, lowering MTTR.
+- Mentored engineers and shortened onboarding from 4 weeks to 1 week.
+
+## Career Highlights
+
+- Recognized for cross-functional leadership and measurable delivery impact.
+
+## Education
+
+B.Sc., Computer Science | Sample University`;
 
   const interviewQuestions = [
     "Describe a time you reduced technical debt while delivering features.",
@@ -29,19 +150,21 @@ experience building scalable web platforms aligned to product goals.`;
     "What observability signals do you track for user-facing services?",
     "Describe your approach to cross-team communication.",
     "How do you prioritize feature requests from product stakeholders?",
-    "Explain your experience migrating a codebase to TypeScript.",
-    "Give an example of successful mentorship you've run?",
   ];
 
-  return { summary, resumeBullets, interviewQuestions };
+  return { company, roleTitle, adaptationNotes, tailoredResume, interviewQuestions };
 }
 
 /**
  * Simple streaming mock that yields raw JSON chunks (Uint8Array).
  * This simulates a provider that streams raw JSON text token-by-token.
  */
-export function mockStreamingJson(jobDesc: string, experience: string) {
-  const out = makeMockOutput(jobDesc, experience);
+export function mockStreamingJson(
+  jobDesc: string,
+  experience: string,
+  provider: MockProvider = "openai",
+) {
+  const out = makeMockOutput(jobDesc, experience, provider);
   const json = JSON.stringify(out);
 
   // Break the JSON into small chunks to simulate token streaming
@@ -66,8 +189,12 @@ export function mockStreamingJson(jobDesc: string, experience: string) {
  * Each line is a JSON object like: { "type": "chunk", "text": "..." }\n ... and ends with { "type": "done" }.
  * This is useful if your client expects NDJSON (the StreamGenerator component does).
  */
-export async function* mockNdjsonStream(jobDesc: string, experience: string) {
-  const out = makeMockOutput(jobDesc, experience);
+export async function* mockNdjsonStream(
+  jobDesc: string,
+  experience: string,
+  provider: MockProvider = "openai",
+) {
+  const out = makeMockOutput(jobDesc, experience, provider);
   const json = JSON.stringify(out);
 
   // Break up the JSON into token-like pieces

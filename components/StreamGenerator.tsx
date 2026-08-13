@@ -5,7 +5,6 @@ import ResumeResultPanel, { PanelOutput } from "./ResumeResultPanel";
 
 type Output = PanelOutput;
 
-type Mode = "json" | "stream";
 type Provider = "openai" | "claude";
 
 const PROVIDER_LABEL: Record<Provider, string> = {
@@ -62,7 +61,6 @@ function previewText(s: string, n = 56) {
 }
 
 export default function StreamGenerator() {
-  const [mode, setMode] = useState<Mode>("json");
   const [useOpenAI, setUseOpenAI] = useState(true);
   const [useClaude, setUseClaude] = useState(false);
 
@@ -252,6 +250,20 @@ export default function StreamGenerator() {
     fetchHistory();
   }, []);
 
+  async function handleDeleteHistory(id: string) {
+    try {
+      const res = await fetch(`/api/history/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`Failed to delete (HTTP ${res.status})`);
+      if (activeHistoryId === id) {
+        setActiveHistoryId(null);
+        setHistoryResult(null);
+      }
+      await fetchHistory();
+    } catch (e: unknown) {
+      setHistoryError(e instanceof Error ? e.message : "Failed to delete history item");
+    }
+  }
+
   async function runOneProvider(provider: Provider, signal: AbortSignal) {
     const formData = new FormData();
     formData.append("provider", provider);
@@ -276,8 +288,7 @@ export default function StreamGenerator() {
       formData.append("resumeText", savedResume.text);
     }
 
-    const url = mode === "stream" ? "/api/generate?stream=true" : "/api/generate";
-    const res = await fetch(url, { method: "POST", body: formData, signal });
+    const res = await fetch("/api/generate", { method: "POST", body: formData, signal });
     const ct = (res.headers.get("content-type") ?? "").toLowerCase();
 
     if (!res.ok) {
@@ -287,34 +298,19 @@ export default function StreamGenerator() {
       throw Object.assign(new Error(message), { code });
     }
 
-    let output: Output;
-    let applyUrl: string | null = null;
-    let resumeTextEcho: string | undefined;
-    let jobDescTextEcho = jobText.trim();
-
-    if (mode === "json") {
-      const json = (await res.json()) as Record<string, unknown>;
-      const candidate = (json?.result ?? json) as Output;
-      if (!isOutput(candidate)) {
-        throw new Error("JSON response did not match expected Output shape.");
-      }
-      output = candidate;
-      applyUrl = typeof json?.applyUrl === "string" ? json.applyUrl : null;
-      resumeTextEcho =
-        typeof json?.resumeText === "string" ? json.resumeText : undefined;
-      if (typeof json?.jobDescText === "string" && json.jobDescText.trim()) {
-        jobDescTextEcho = json.jobDescText;
-      }
-    } else {
-      const text = await res.text();
-      const parsed = JSON.parse(text);
-      if (!isOutput(parsed)) {
-        throw new Error(
-          "Stream selected but JSON response did not match Output shape.",
-        );
-      }
-      output = parsed;
+    const json = (await res.json()) as Record<string, unknown>;
+    const candidate = (json?.result ?? json) as Output;
+    if (!isOutput(candidate)) {
+      throw new Error("JSON response did not match expected Output shape.");
     }
+    const output = candidate;
+    const applyUrl = typeof json?.applyUrl === "string" ? json.applyUrl : null;
+    const resumeTextEcho =
+      typeof json?.resumeText === "string" ? json.resumeText : undefined;
+    const jobDescTextEcho =
+      typeof json?.jobDescText === "string" && json.jobDescText.trim()
+        ? json.jobDescText
+        : jobText.trim();
 
     return {
       output,
@@ -477,29 +473,46 @@ export default function StreamGenerator() {
               {history.map((item) => {
                 const active = item.id === activeHistoryId;
                 return (
-                  <button
+                  <div
                     key={item.id}
-                    onClick={() => loadFromHistory(item)}
                     className={[
-                      "w-64 shrink-0 rounded-2xl border px-3 py-2 text-left shadow-sm",
+                      "relative w-64 shrink-0 rounded-2xl border shadow-sm",
                       "hover:bg-slate-50 dark:hover:bg-slate-800/40",
                       active
                         ? "border-slate-500 bg-slate-50 dark:border-slate-400 dark:bg-slate-800/40"
                         : "border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900",
                     ].join(" ")}
                   >
-                    <div className="text-xs font-semibold text-slate-900 dark:text-slate-100">
-                      {formatWhen(item.createdAt)}
-                    </div>
-                    <div className="mt-1 text-xs text-slate-700 dark:text-slate-300">
-                      JD: {previewText(item.jobDesc, 44)}
-                    </div>
-                    {item.applyUrl && (
-                      <div className="mt-1 text-xs text-emerald-700 dark:text-emerald-300">
-                        🔗 Apply link saved
+                    <button
+                      type="button"
+                      onClick={() => loadFromHistory(item)}
+                      className="w-full px-3 py-2 pr-8 text-left"
+                    >
+                      <div className="text-xs font-semibold text-slate-900 dark:text-slate-100">
+                        {formatWhen(item.createdAt)}
                       </div>
-                    )}
-                  </button>
+                      <div className="mt-1 text-xs text-slate-700 dark:text-slate-300">
+                        JD: {previewText(item.jobDesc, 44)}
+                      </div>
+                      {item.applyUrl && (
+                        <div className="mt-1 text-xs text-emerald-700 dark:text-emerald-300">
+                          🔗 Apply link saved
+                        </div>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteHistory(item.id);
+                      }}
+                      aria-label="Delete this history item"
+                      title="Delete"
+                      className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full text-slate-400 hover:bg-rose-100 hover:text-rose-700 dark:hover:bg-rose-950/40 dark:hover:text-rose-300"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -591,14 +604,14 @@ export default function StreamGenerator() {
                 <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
                   {savedResume
                     ? `New résumé below will replace "${savedResume.name}" (last used ${formatWhen(savedResume.savedAt)}) after this run.`
-                    : "Upload your résumé PDF once — it's saved in this browser and reused automatically next time."}
+                    : "Upload your résumé PDF or DOCX once — it's saved in this browser and reused automatically next time."}
                 </div>
               )}
 
               <input
                 ref={resumeFileInputRef}
                 type="file"
-                accept=".pdf,application/pdf"
+                accept=".pdf,application/pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 onChange={(e) => {
                   const f = e.target.files?.[0] ?? null;
                   setResumeFile(f);
@@ -670,20 +683,6 @@ export default function StreamGenerator() {
           </div>
 
           <div className="mt-5 flex flex-wrap items-center gap-4 border-t border-slate-200 pt-4 dark:border-slate-800">
-            <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                Mode
-              </span>
-              <select
-                value={mode}
-                onChange={(e) => setMode(e.target.value as Mode)}
-                className="h-10 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400/60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-              >
-                <option value="json">JSON (non-stream)</option>
-                <option value="stream">Stream (stream=true)</option>
-              </select>
-            </label>
-
             <div className="flex flex-col gap-1">
               <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
                 AI Provider{" "}

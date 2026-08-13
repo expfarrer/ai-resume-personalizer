@@ -8,6 +8,7 @@ import {
   parseResumeMarkdown,
 } from "@/lib/resumeBlocks";
 import { computeAtsScore } from "@/lib/atsScore";
+import type { PdfValidationResult } from "@/lib/pdfValidate";
 
 export type PanelOutput = {
   company: string;
@@ -73,6 +74,9 @@ export default function ResumeResultPanel({
   const [showAtsBreakdown, setShowAtsBreakdown] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<string>("");
+  const [verifyResult, setVerifyResult] = useState<PdfValidationResult | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [showVerifyBreakdown, setShowVerifyBreakdown] = useState(false);
 
   const atsResult = useMemo(
     () => computeAtsScore(blocks, jobDescText, output.company),
@@ -83,6 +87,8 @@ export default function ResumeResultPanel({
     setBlocks(parseResumeMarkdown(output.tailoredResume));
     setViewMode("formatted");
     setError(null);
+    setVerifyResult(null);
+    setShowVerifyBreakdown(false);
   }, [output]);
 
   function setStatusTemp(msg: string) {
@@ -157,6 +163,35 @@ export default function ResumeResultPanel({
     }
   }
 
+  async function verifyPdf() {
+    setVerifying(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/pdf/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          company: output.company,
+          roleTitle: output.roleTitle,
+          tailoredResume: blocksToMarkdown(blocks),
+        }),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        throw new Error(errJson?.error ?? `Failed to verify PDF (HTTP ${res.status})`);
+      }
+
+      const result = (await res.json()) as PdfValidationResult;
+      setVerifyResult(result);
+      setShowVerifyBreakdown(true);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to verify PDF extraction");
+    } finally {
+      setVerifying(false);
+    }
+  }
+
   return (
     <div className="rounded-3xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-5 dark:border-slate-800">
@@ -182,6 +217,31 @@ export default function ResumeResultPanel({
             >
               ATS {atsResult.score}/100 {showAtsBreakdown ? "▲" : "▼"}
             </button>
+
+            {verifyResult ? (
+              <button
+                type="button"
+                onClick={() => setShowVerifyBreakdown((v) => !v)}
+                className={
+                  "inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-bold " +
+                  (verifyResult.passed
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                    : "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300")
+                }
+              >
+                Extraction {verifyResult.passed ? "✓ verified" : "✗ issues"}{" "}
+                {showVerifyBreakdown ? "▲" : "▼"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={verifyPdf}
+                disabled={verifying}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-2.5 py-0.5 text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                {verifying ? "Verifying…" : "Verify Extraction"}
+              </button>
+            )}
           </div>
           <div className="text-xs text-slate-600 dark:text-slate-300">
             Editable — proofread and make any small corrections before
@@ -191,6 +251,30 @@ export default function ResumeResultPanel({
           {showAtsBreakdown && (
             <ul className="mt-2 space-y-1 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-800 dark:bg-slate-950">
               {atsResult.checks.map((c, i) => (
+                <li
+                  key={i}
+                  className={
+                    "flex items-start gap-1.5 " +
+                    (c.passed
+                      ? "text-emerald-700 dark:text-emerald-400"
+                      : "text-rose-700 dark:text-rose-400")
+                  }
+                >
+                  <span>{c.passed ? "✓" : "✗"}</span>
+                  <span className="text-slate-700 dark:text-slate-300">{c.label}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {verifyResult && showVerifyBreakdown && (
+            <ul className="mt-2 space-y-1 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-800 dark:bg-slate-950">
+              <li className="text-slate-500 dark:text-slate-400">
+                Independent re-extraction — regenerates the PDF and parses it
+                back with a separate library, checking what a real ATS
+                parser would actually see.
+              </li>
+              {verifyResult.checks.map((c, i) => (
                 <li
                   key={i}
                   className={

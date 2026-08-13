@@ -5,6 +5,7 @@
 // (e.g. LinkedIn/Glassdoor) so callers can fall back to manual paste.
 
 import { PDFParse } from "pdf-parse";
+import mammoth from "mammoth";
 
 const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
@@ -70,6 +71,13 @@ export async function extractPdfBuffer(buf: Buffer): Promise<string> {
   } finally {
     await parser.destroy();
   }
+}
+
+// .docx only (Office Open XML) — legacy binary .doc is a different format
+// mammoth doesn't support; callers should reject those before calling this.
+export async function extractDocxBuffer(buf: Buffer): Promise<string> {
+  const result = await mammoth.extractRawText({ buffer: buf });
+  return result.value.trim();
 }
 
 export async function fetchTextFromUrl(

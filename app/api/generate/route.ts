@@ -4,6 +4,7 @@ import { OutputSchema } from "@/lib/schema";
 import { prisma } from "@/lib/prisma";
 import { makeMockOutput, mockStreamingJson } from "@/lib/mockOpenAI";
 import {
+  extractDocxBuffer,
   extractFirstUrl,
   extractPdfBuffer,
   fetchTextFromUrl,
@@ -93,11 +94,28 @@ async function callOpenAiOnce(prompt: string) {
   return OutputSchema.parse(JSON.parse(text));
 }
 
+// A 401/403 from either SDK means the API key is missing/invalid — retrying
+// the identical request 3x just triples the latency before an identical
+// failure. Everything else (a transient 5xx, a rate limit, or our own
+// OutputSchema/ZodError from the model omitting a field) is worth retrying.
+function isFatalError(err: unknown): boolean {
+  if (err instanceof OpenAI.APIError || err instanceof Anthropic.APIError) {
+    return err.status === 401 || err.status === 403;
+  }
+  return false;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // LLM structured-output calls occasionally omit or mis-type a field even
 // with a schema/tool forcing the shape (observed with Claude on this prompt
 // specifically, dropping whichever field lands last in a large combined
 // generation). Retrying a failed attempt is standard practice here and is
 // far cheaper than the alternative of splitting into multiple API calls.
+// Backs off between attempts (500ms, 1000ms) rather than hammering
+// immediately, in case the failure was a rate limit.
 async function callModel(provider: Provider, prompt: string) {
   const attempts = 3;
   let lastError: unknown;
@@ -108,6 +126,8 @@ async function callModel(provider: Provider, prompt: string) {
         : await callOpenAiOnce(prompt);
     } catch (err) {
       lastError = err;
+      if (isFatalError(err)) throw err;
+      if (i < attempts - 1) await delay(500 * 2 ** i);
     }
   }
   throw lastError;
@@ -169,16 +189,35 @@ ${
 }`;
 }
 
+// Client-input problems (missing field, unsupported file type) — always a
+// 400, never a fatal server issue. A typed class instead of matching on the
+// message text so this can't silently break if wording ever changes.
+class ValidationError extends Error {}
+
 function errorStatus(err: unknown) {
   if (err instanceof FetchBlockedError) return 400;
-  if (err instanceof Error && /^Missing |^Only PDF/.test(err.message)) {
-    return 400;
-  }
+  if (err instanceof ValidationError) return 400;
   return 500;
 }
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
+}
+
+// History rows hold real resume/JD content indefinitely otherwise — cap
+// retention rather than let a local sqlite file grow forever with PII.
+const HISTORY_RETENTION_LIMIT = 50;
+
+async function pruneOldGenerations() {
+  const cutoffRow = await prisma.generation.findMany({
+    orderBy: { createdAt: "desc" },
+    skip: HISTORY_RETENTION_LIMIT,
+    take: 1,
+    select: { createdAt: true },
+  });
+  const cutoff = cutoffRow[0]?.createdAt;
+  if (!cutoff) return;
+  await prisma.generation.deleteMany({ where: { createdAt: { lt: cutoff } } });
 }
 
 async function resolveJobDesc(
@@ -200,20 +239,31 @@ async function resolveJobDesc(
     return { text, applyUrl: trimmedUrl };
   }
 
-  throw new Error("Missing jobUrl or jobText");
+  throw new ValidationError("Missing jobUrl or jobText");
 }
 
 async function resolveResumeText(form: FormData): Promise<string> {
   const resumeFile = form.get("resumeFile");
   if (resumeFile instanceof File && resumeFile.size > 0) {
-    const isPdf =
-      resumeFile.type === "application/pdf" ||
-      resumeFile.name.toLowerCase().endsWith(".pdf");
-    if (!isPdf) {
-      throw new Error("Only PDF resumes are supported for file upload.");
+    const name = resumeFile.name.toLowerCase();
+    const isPdf = resumeFile.type === "application/pdf" || name.endsWith(".pdf");
+    const isDocx =
+      resumeFile.type ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      name.endsWith(".docx");
+    const isLegacyDoc = name.endsWith(".doc") && !isDocx;
+
+    if (isLegacyDoc) {
+      throw new ValidationError(
+        "The older .doc format isn't supported — save as .docx or PDF and try again.",
+      );
     }
+    if (!isPdf && !isDocx) {
+      throw new ValidationError("Only PDF or DOCX resumes are supported for file upload.");
+    }
+
     const buf = Buffer.from(await resumeFile.arrayBuffer());
-    return extractPdfBuffer(buf);
+    return isPdf ? extractPdfBuffer(buf) : extractDocxBuffer(buf);
   }
 
   const resumeUrl = form.get("resumeUrl");
@@ -227,7 +277,7 @@ async function resolveResumeText(form: FormData): Promise<string> {
     return resumeText.trim();
   }
 
-  throw new Error("Missing resumeFile, resumeUrl, or resumeText");
+  throw new ValidationError("Missing resumeFile, resumeUrl, or resumeText");
 }
 
 export async function POST(req: Request) {
@@ -307,6 +357,7 @@ export async function POST(req: Request) {
           },
           select: { id: true, createdAt: true },
         });
+        await pruneOldGenerations();
         return NextResponse.json({
           saved,
           result: valid,
@@ -338,6 +389,7 @@ export async function POST(req: Request) {
         },
         select: { id: true, createdAt: true },
       });
+      await pruneOldGenerations();
       return NextResponse.json({
         saved,
         result: parsed,

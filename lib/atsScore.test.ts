@@ -3,7 +3,7 @@ import { computeAtsScore } from "./atsScore";
 import { parseResumeMarkdown } from "./resumeBlocks";
 
 const GOOD_RESUME = `Jordan Rivera
-jordan.rivera@example.com | (555) 123-4567 | Boston, MA
+jordan.rivera@example.com | (555) 123-4567 | 123 Main Street, Boston, MA 02134
 
 ## Technical Skills
 
@@ -22,7 +22,7 @@ Engineering leader with a decade of experience shipping cloud-native platforms a
 
 ## Education
 
-BSc Computer Science | State University`;
+Bachelor of Science (B.S.), Computer Science | State University, Boston, MA - 2013`;
 
 const JD = `Senior Platform Engineer at Nimbus Systems. Looking for AWS, Kubernetes, CI/CD, team leadership, mentoring experience.`;
 
@@ -72,5 +72,64 @@ describe("computeAtsScore", () => {
     const result = computeAtsScore(blocks, "", "");
     const structureCheck = result.checks.find((c) => c.label.includes("Single-column"));
     expect(structureCheck?.passed).toBe(true);
+  });
+
+  it("flags a missing street address", () => {
+    const blocks = parseResumeMarkdown("Jordan Rivera\njordan@example.com | Boston, MA");
+    const result = computeAtsScore(blocks, "", "");
+    const check = result.checks.find((c) => c.label.startsWith("Street address"));
+    expect(check?.passed).toBe(false);
+  });
+
+  it("flags missing city/state/ZIP when only a region is given", () => {
+    const blocks = parseResumeMarkdown("Jordan Rivera\njordan@example.com | Greater Boston Area");
+    const result = computeAtsScore(blocks, "", "");
+    const check = result.checks.find((c) => c.label.includes("ZIP"));
+    expect(check?.passed).toBe(false);
+  });
+
+  it("passes address checks with a full street/city/state/ZIP", () => {
+    const blocks = parseResumeMarkdown(
+      "Jordan Rivera\njordan@example.com | 123 Main Street, Boston, MA 02134",
+    );
+    const result = computeAtsScore(blocks, "", "");
+    expect(result.checks.find((c) => c.label.startsWith("Street address"))?.passed).toBe(true);
+    expect(result.checks.find((c) => c.label.startsWith("City, state"))?.passed).toBe(true);
+  });
+
+  it("flags a freelance-style experience entry with no distinct company field", () => {
+    const blocks = parseResumeMarkdown(
+      "Jordan Rivera\njordan@example.com\n\n## Experience\n\n### Consultant | Germany - 2018 - Present\n\n- Did consulting work.",
+    );
+    const result = computeAtsScore(blocks, "", "");
+    const check = result.checks.find((c) => c.label.includes("Job title"));
+    expect(check?.passed).toBe(false);
+  });
+
+  it("passes the job title check when a company (or Self-Employed) is present", () => {
+    const blocks = parseResumeMarkdown(
+      "Jordan Rivera\njordan@example.com\n\n## Experience\n\n### Consultant | Self-Employed, Berlin, Germany - 2018 - Present\n\n- Did consulting work.",
+    );
+    const result = computeAtsScore(blocks, "", "");
+    const check = result.checks.find((c) => c.label.includes("Job title"));
+    expect(check?.passed).toBe(true);
+  });
+
+  it("flags an Education line with no clear degree/institution separation", () => {
+    const blocks = parseResumeMarkdown(
+      "Jordan Rivera\njordan@example.com\n\n## Education\n\nState University, Boston, MA",
+    );
+    const result = computeAtsScore(blocks, "", "");
+    const check = result.checks.find((c) => c.label.includes("Degree"));
+    expect(check?.passed).toBe(false);
+  });
+
+  it("passes the education check with a clear Degree | Institution pattern", () => {
+    const blocks = parseResumeMarkdown(
+      "Jordan Rivera\njordan@example.com\n\n## Education\n\nBachelor of Science, Computer Science | State University, Boston, MA - 2013",
+    );
+    const result = computeAtsScore(blocks, "", "");
+    const check = result.checks.find((c) => c.label.includes("Degree"));
+    expect(check?.passed).toBe(true);
   });
 });

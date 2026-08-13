@@ -75,8 +75,13 @@ export function computeAtsScore(
 
   const checks: AtsCheck[] = [];
   const weights = {
+    fullName: 5,
     contact: 10,
+    streetAddress: 5,
+    cityStateZip: 5,
     headings: 20,
+    jobTitlePattern: 5,
+    educationPattern: 5,
     bullets: 10,
     structure: 10,
     plainText: 10,
@@ -87,8 +92,18 @@ export function computeAtsScore(
   let earned = 0;
   let possible = 0;
 
-  // 1. Contact info near the top
-  const topText = nonBlank.slice(0, 3).map((b) => b.text).join(" ");
+  // 1. Full name on its own line at the very top — an ATS that can't find a
+  // clean name line can't populate its own "First/Last Name" fields at all.
+  const firstLine = (nonBlank[0]?.text ?? "").trim();
+  const looksLikeName =
+    /^[A-Z][a-zA-Z.'-]+(\s+[A-Z][a-zA-Z.'-]+){1,3}$/.test(firstLine) &&
+    !/[@\d]/.test(firstLine);
+  checks.push({ label: "Full name on its own line at the top", passed: looksLikeName });
+  earned += looksLikeName ? weights.fullName : 0;
+  possible += weights.fullName;
+
+  // 2. Contact info near the top
+  const topText = nonBlank.slice(0, 4).map((b) => b.text).join(" ");
   const hasEmail = /[\w.+-]+@[\w-]+\.[a-z]{2,}/i.test(topText);
   const hasPhone = /\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/.test(topText);
   const contactOk = hasEmail || hasPhone;
@@ -96,7 +111,38 @@ export function computeAtsScore(
   earned += contactOk ? weights.contact : 0;
   possible += weights.contact;
 
-  // 2. Standard, ATS-recognized section headings
+  // 2b/2c. Complete mailing address — many ATS systems auto-fill an
+  // applicant's address fields straight from the resume header and reject
+  // or flag it when all that's there is a region ("Greater Boston Area")
+  // instead of an actual street + city + state + ZIP. Confirmed against
+  // real ATS import feedback, not a theoretical rule.
+  const US_STATE_ABBR =
+    "AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC";
+  const hasStreetAddress = /\b\d{1,6}\s+[A-Za-z][A-Za-z0-9.'-]*(\s+[A-Za-z0-9.'-]+){0,4}\b/.test(
+    topText,
+  );
+  checks.push({
+    label: hasStreetAddress
+      ? "Street address present"
+      : 'Street address missing — a region like "Greater Boston Area" alone can leave an ATS\'s street-address field empty',
+    passed: hasStreetAddress,
+  });
+  earned += hasStreetAddress ? weights.streetAddress : 0;
+  possible += weights.streetAddress;
+
+  const hasCityStateZip = new RegExp(
+    `[A-Za-z][A-Za-z .'-]*,\\s*(${US_STATE_ABBR})\\b\\s*\\d{5}(-\\d{4})?`,
+  ).test(topText);
+  checks.push({
+    label: hasCityStateZip
+      ? "City, state, and ZIP present"
+      : "City/state/ZIP not detected in \"City, ST 00000\" format — needed for an ATS to parse location fields",
+    passed: hasCityStateZip,
+  });
+  earned += hasCityStateZip ? weights.cityStateZip : 0;
+  possible += weights.cityStateZip;
+
+  // 3. Standard, ATS-recognized section headings
   const coreHeadings = ["summary", "experience", "skills", "education"];
   const foundHeadings = coreHeadings.filter((h) =>
     headingTexts.some((x) => x.includes(h)),
@@ -108,7 +154,57 @@ export function computeAtsScore(
   earned += (foundHeadings.length / coreHeadings.length) * weights.headings;
   possible += weights.headings;
 
-  // 3. Bullet points used for experience
+  // 3b. Job title clearly separated from company on each Experience entry —
+  // an ATS title-parser can fail on "Title | Location - Dates" with no
+  // distinct company/employer segment (freelance/self-employed roles are
+  // the usual culprit). Confirmed against real ATS import feedback.
+  const SELF_EMPLOYED_RE = /\b(self-employed|freelance|independent contractor|independent consultant)\b/i;
+  const incompleteRoles = subHeadings.filter((b) => {
+    const parts = b.text.split("|");
+    if (parts.length < 2) return true;
+    const rest = parts.slice(1).join("|");
+    return !rest.includes(",") && !SELF_EMPLOYED_RE.test(rest);
+  });
+  const rolesOk = subHeadings.length === 0 || incompleteRoles.length === 0;
+  checks.push({
+    label: rolesOk
+      ? "Job title clearly separated from company on each experience entry"
+      : `Job title/company pattern unclear on ${incompleteRoles.length} experience ${incompleteRoles.length === 1 ? "entry" : "entries"} (e.g. "${incompleteRoles[0]?.text}") — an ATS can fail to extract a job title with no distinct company name; freelance/self-employed roles need "Self-Employed" or "Freelance" filled in as the company`,
+    passed: rolesOk,
+  });
+  earned += rolesOk ? weights.jobTitlePattern : 0;
+  possible += weights.jobTitlePattern;
+
+  // 3c. Degree clearly separated from institution in Education — same class
+  // of ATS parsing failure as job titles, just for "Degree" / "School"
+  // fields instead of "Job Title" / "Company".
+  const eduHeadingIdx = blocks.findIndex(
+    (b) => b.type === "heading" && b.level <= 2 && /education/i.test(b.text),
+  );
+  const eduLines: Extract<ResumeBlock, { type: "paragraph" | "bullet" }>[] = [];
+  if (eduHeadingIdx !== -1) {
+    for (let i = eduHeadingIdx + 1; i < blocks.length; i++) {
+      const b = blocks[i];
+      if (b.type === "heading" && b.level <= 2) break;
+      if (b.type === "paragraph" || b.type === "bullet") eduLines.push(b);
+    }
+  }
+  const DEGREE_RE =
+    /\b(b\.?a\.?|b\.?s\.?|b\.?sc\.?|bachelor|master|m\.?a\.?|m\.?s\.?|m\.?sc\.?|mba|ph\.?d\.?|doctorate|associate|diploma|certificate)\b/i;
+  const incompleteEdu = eduLines.filter(
+    (b) => !(DEGREE_RE.test(b.text) && b.text.includes("|")),
+  );
+  const eduOk = eduLines.length === 0 || incompleteEdu.length === 0;
+  checks.push({
+    label: eduOk
+      ? "Degree clearly separated from institution in Education"
+      : `Degree/institution pattern unclear on ${incompleteEdu.length} Education ${incompleteEdu.length === 1 ? "line" : "lines"} (e.g. "${incompleteEdu[0]?.text}") — expected "Degree | Institution, Location - Year" so an ATS can split degree from school`,
+    passed: eduOk,
+  });
+  earned += eduOk ? weights.educationPattern : 0;
+  possible += weights.educationPattern;
+
+  // 3d. Bullet points used for experience
   const bulletsOk = bullets.length >= 3;
   checks.push({ label: "Bullet points used for experience", passed: bulletsOk });
   earned += bulletsOk ? weights.bullets : 0;

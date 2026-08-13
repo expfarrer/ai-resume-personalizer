@@ -9,6 +9,7 @@ import {
 } from "@/lib/resumeBlocks";
 import { computeAtsScore } from "@/lib/atsScore";
 import type { PdfValidationResult } from "@/lib/pdfValidate";
+import { computeLayoutTier, type LayoutTier } from "@/lib/pdfBuilder";
 
 export type PanelOutput = {
   company: string;
@@ -20,19 +21,46 @@ export type PanelOutput = {
 
 type ViewMode = "formatted" | "raw";
 
+// PDF points -> on-screen CSS pixels at the 96 DPI this preview is sized
+// for (matches the 816px-wide US Letter page below: 8.5in * 96 = 816).
+const PT_TO_PX = 96 / 72;
+// US Letter height (792pt) in that same 96 DPI — the preview page is fixed
+// to this height so left-over space at the bottom is actually visible,
+// instead of the container just shrink-wrapping to whatever the content's
+// natural height happens to be.
+const PAGE_HEIGHT_PX = 792 * PT_TO_PX;
+
+// Generous fallback used until the real layout tier has been computed (or
+// if that computation fails) — matches the spacious end of the PDF's own
+// spacing range so the preview never looks worse than the eventual PDF.
+const FALLBACK_TIER: LayoutTier = {
+  margin: 40,
+  headingSize: 12.5,
+  subheadingSize: 10.5,
+  bodySize: 10,
+  bulletSize: 10,
+  headerSize: 8,
+  lineGap: 2.5,
+  headingPre: 4,
+  subheadingPre: 2,
+  blankGap: 4,
+};
+
 // Always dark-on-light — this is standing in for a printed page, so it
 // stays readable as black-on-white regardless of the site's dark mode.
 const editableFieldClass =
-  "w-full resize-none overflow-hidden border-0 bg-transparent p-0 leading-relaxed text-slate-900 focus:outline-none focus:ring-0";
+  "w-full resize-none overflow-hidden border-0 bg-transparent p-0 text-slate-900 focus:outline-none focus:ring-0 focus:bg-indigo-50/70";
 
 function AutoGrowTextarea({
   value,
   onChange,
   className,
+  style,
 }: {
   value: string;
   onChange: (v: string) => void;
   className?: string;
+  style?: React.CSSProperties;
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
 
@@ -41,7 +69,7 @@ function AutoGrowTextarea({
       ref.current.style.height = "auto";
       ref.current.style.height = `${ref.current.scrollHeight}px`;
     }
-  }, [value]);
+  }, [value, style?.fontSize, style?.lineHeight]);
 
   return (
     <textarea
@@ -50,6 +78,7 @@ function AutoGrowTextarea({
       onChange={(e) => onChange(e.target.value)}
       rows={1}
       className={className}
+      style={style}
     />
   );
 }
@@ -77,6 +106,7 @@ export default function ResumeResultPanel({
   const [verifyResult, setVerifyResult] = useState<PdfValidationResult | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [showVerifyBreakdown, setShowVerifyBreakdown] = useState(false);
+  const [layoutTier, setLayoutTier] = useState<LayoutTier>(FALLBACK_TIER);
 
   const atsResult = useMemo(
     () => computeAtsScore(blocks, jobDescText, output.company),
@@ -90,6 +120,28 @@ export default function ResumeResultPanel({
     setVerifyResult(null);
     setShowVerifyBreakdown(false);
   }, [output]);
+
+  // Recomputes the same spacing tier /api/pdf will pick for this exact
+  // content, so the editable preview shows how full the exported PDF page
+  // will actually be — not a fixed spacing unrelated to content length.
+  // Debounced since this reruns on every keystroke while editing.
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      computeLayoutTier({
+        company: output.company,
+        roleTitle: output.roleTitle,
+        tailoredResume: blocksToMarkdown(blocks),
+        // Browser text reflow wraps slightly more eagerly than pdf-lib's
+        // own measurement even at matching font/size — bias toward a
+        // tighter tier here so the preview reliably lands within one
+        // visible page instead of spilling past it.
+        availableHeightFactor: 0.84,
+      })
+        .then(setLayoutTier)
+        .catch(() => setLayoutTier(FALLBACK_TIER));
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [blocks, output.company, output.roleTitle]);
 
   function setStatusTemp(msg: string) {
     setCopyStatus(msg);
@@ -387,48 +439,82 @@ export default function ResumeResultPanel({
           <div className="flex justify-center overflow-x-auto rounded-2xl bg-slate-200 p-4 dark:bg-slate-950 sm:p-8">
             <div
               className="shrink-0 bg-white text-slate-900 shadow-lg"
-              style={{ width: 816, minHeight: 300, padding: 53 }}
+              style={{
+                width: 816,
+                minHeight: PAGE_HEIGHT_PX,
+                padding: layoutTier.margin * PT_TO_PX,
+              }}
             >
-              <div className="divide-y divide-transparent">
+              {/* Matches the "Tailored for: ..." line buildResumePdf draws
+                  at the top of the exported PDF — synthesized, not part of
+                  the editable blocks, so it's not itself editable here. */}
+              <div
+                style={{
+                  fontSize: layoutTier.headerSize * PT_TO_PX,
+                  lineHeight: `${(layoutTier.headerSize + 1) * PT_TO_PX}px`,
+                  marginBottom: 4 * PT_TO_PX,
+                  color: "rgb(128, 128, 140)",
+                }}
+              >
+                Tailored for: {output.roleTitle} at {output.company}
+              </div>
+              <div>
                 {blocks.map((b) => {
                   if (b.type === "blank") {
-                    return <div key={b.id} className="h-3" />;
+                    return (
+                      <div key={b.id} style={{ height: layoutTier.blankGap * PT_TO_PX }} />
+                    );
                   }
                   if (b.type === "heading") {
                     const isMajor = b.level <= 2;
+                    const sizePt = isMajor ? layoutTier.headingSize : layoutTier.subheadingSize;
+                    const prePt = isMajor ? layoutTier.headingPre : layoutTier.subheadingPre;
                     return (
                       <AutoGrowTextarea
                         key={b.id}
                         value={b.text}
                         onChange={(v) => updateBlockText(b.id, v)}
+                        style={{
+                          marginTop: prePt * PT_TO_PX,
+                          fontSize: sizePt * PT_TO_PX,
+                          lineHeight: `${(sizePt + layoutTier.lineGap) * PT_TO_PX}px`,
+                        }}
                         className={
                           isMajor
-                            ? "mt-3 w-full resize-none overflow-hidden border-0 border-b-2 border-slate-300 bg-transparent pb-1.5 text-[17px] font-bold leading-snug text-slate-900 focus:outline-none focus:border-indigo-500"
-                            : "mt-2 w-full resize-none overflow-hidden border-0 border-b border-slate-200 bg-transparent pb-1 text-[14px] font-semibold leading-snug text-slate-800 focus:outline-none focus:border-indigo-400"
+                            ? "w-full resize-none overflow-hidden border-0 bg-transparent font-bold text-slate-900 focus:outline-none focus:bg-indigo-50/70"
+                            : "w-full resize-none overflow-hidden border-0 bg-transparent font-semibold text-slate-800 focus:outline-none focus:bg-indigo-50/70"
                         }
                       />
                     );
                   }
+                  const sizePt = b.type === "bullet" ? layoutTier.bulletSize : layoutTier.bodySize;
+                  const lineHeightPx = (sizePt + layoutTier.lineGap) * PT_TO_PX;
                   if (b.type === "bullet") {
                     return (
-                      <div key={b.id} className="flex items-start gap-2 py-0.5">
-                        <span className="mt-1.5 text-slate-500">•</span>
+                      <div key={b.id} className="flex items-start gap-2">
+                        <span
+                          className="text-slate-500"
+                          style={{ fontSize: sizePt * PT_TO_PX, lineHeight: `${lineHeightPx}px` }}
+                        >
+                          •
+                        </span>
                         <AutoGrowTextarea
                           value={b.text}
                           onChange={(v) => updateBlockText(b.id, v)}
-                          className={editableFieldClass + " text-[13px] text-slate-900"}
+                          className={editableFieldClass}
+                          style={{ fontSize: sizePt * PT_TO_PX, lineHeight: `${lineHeightPx}px` }}
                         />
                       </div>
                     );
                   }
                   return (
-                    <div key={b.id} className="py-0.5">
-                      <AutoGrowTextarea
-                        value={b.text}
-                        onChange={(v) => updateBlockText(b.id, v)}
-                        className={editableFieldClass + " text-[13px] text-slate-900"}
-                      />
-                    </div>
+                    <AutoGrowTextarea
+                      key={b.id}
+                      value={b.text}
+                      onChange={(v) => updateBlockText(b.id, v)}
+                      className={editableFieldClass}
+                      style={{ fontSize: sizePt * PT_TO_PX, lineHeight: `${lineHeightPx}px` }}
+                    />
                   );
                 })}
               </div>

@@ -15,11 +15,14 @@ const PAGE_HEIGHT = 792;
 // hard-capped at 800, across anywhere from 1 to 7+ roles). A single fixed
 // spacing either looks great on a typical resume and overflows onto a
 // near-empty 2nd page for a dense one, or is tight enough to always fit one
-// page but leaves a short resume looking cramped with half the page empty.
-// Instead, try progressively tighter tiers and use the most generous one
-// that actually fits on one page — most resumes get the spacious look,
-// only genuinely dense ones get compacted, and only as much as needed.
-type LayoutTier = {
+// page but leaves a short resume looking cramped with visible dead space at
+// the bottom. Instead we interpolate continuously between a spacious and a
+// tight extreme and binary-search for the most generous point that still
+// fits exactly on one page — so the page fills up as much as the content
+// allows, and only genuinely dense resumes get compacted, no more than
+// necessary. `computeLayoutTier` is also used client-side (see
+// ResumeResultPanel) so the on-screen preview matches the exported PDF.
+export type LayoutTier = {
   margin: number;
   headingSize: number;
   subheadingSize: number;
@@ -32,56 +35,48 @@ type LayoutTier = {
   blankGap: number; // gap for a blank line in the source markdown
 };
 
-const LAYOUT_TIERS: LayoutTier[] = [
-  {
-    margin: 40,
-    headingSize: 12.5,
-    subheadingSize: 10.5,
-    bodySize: 10,
-    bulletSize: 10,
-    headerSize: 8,
-    lineGap: 2.5,
-    headingPre: 4,
-    subheadingPre: 2,
-    blankGap: 4,
-  },
-  {
-    margin: 36,
-    headingSize: 12,
-    subheadingSize: 10,
-    bodySize: 9.5,
-    bulletSize: 9.5,
-    headerSize: 8,
-    lineGap: 2,
-    headingPre: 3,
-    subheadingPre: 1.5,
-    blankGap: 3,
-  },
-  {
-    margin: 30,
-    headingSize: 11,
-    subheadingSize: 9.5,
-    bodySize: 9,
-    bulletSize: 9,
-    headerSize: 7.5,
-    lineGap: 1.5,
-    headingPre: 2,
-    subheadingPre: 1,
-    blankGap: 2.5,
-  },
-  {
-    margin: 28,
-    headingSize: 10.5,
-    subheadingSize: 9.5,
-    bodySize: 9,
-    bulletSize: 9,
-    headerSize: 7.5,
-    lineGap: 1.3,
-    headingPre: 2,
-    subheadingPre: 0.5,
-    blankGap: 2,
-  },
-];
+const SPACIOUS_TIER: LayoutTier = {
+  margin: 40,
+  headingSize: 12.5,
+  subheadingSize: 10.5,
+  bodySize: 10,
+  bulletSize: 10,
+  headerSize: 8,
+  lineGap: 2.5,
+  headingPre: 4,
+  subheadingPre: 2,
+  blankGap: 4,
+};
+
+const TIGHT_TIER: LayoutTier = {
+  margin: 28,
+  headingSize: 10.5,
+  subheadingSize: 9.5,
+  bodySize: 9,
+  bulletSize: 9,
+  headerSize: 7.5,
+  lineGap: 1.3,
+  headingPre: 2,
+  subheadingPre: 0.5,
+  blankGap: 2,
+};
+
+// t=0 -> TIGHT_TIER, t=1 -> SPACIOUS_TIER
+function interpolateTier(t: number): LayoutTier {
+  const lerp = (a: number, b: number) => a + (b - a) * t;
+  return {
+    margin: lerp(TIGHT_TIER.margin, SPACIOUS_TIER.margin),
+    headingSize: lerp(TIGHT_TIER.headingSize, SPACIOUS_TIER.headingSize),
+    subheadingSize: lerp(TIGHT_TIER.subheadingSize, SPACIOUS_TIER.subheadingSize),
+    bodySize: lerp(TIGHT_TIER.bodySize, SPACIOUS_TIER.bodySize),
+    bulletSize: lerp(TIGHT_TIER.bulletSize, SPACIOUS_TIER.bulletSize),
+    headerSize: lerp(TIGHT_TIER.headerSize, SPACIOUS_TIER.headerSize),
+    lineGap: lerp(TIGHT_TIER.lineGap, SPACIOUS_TIER.lineGap),
+    headingPre: lerp(TIGHT_TIER.headingPre, SPACIOUS_TIER.headingPre),
+    subheadingPre: lerp(TIGHT_TIER.subheadingPre, SPACIOUS_TIER.subheadingPre),
+    blankGap: lerp(TIGHT_TIER.blankGap, SPACIOUS_TIER.blankGap),
+  };
+}
 
 // Common "smart" typography a model tends to produce, mapped to plain ASCII
 // that's both guaranteed encodable by the standard WinAnsi font and safer
@@ -263,16 +258,55 @@ function chooseLayoutTier(
   tailoredResume: string,
   regular: PDFFont,
   bold: PDFFont,
+  // Browser text reflow (used by the client-side editable preview) wraps
+  // slightly differently than pdf-lib's own width-table-based wrapping,
+  // even at matching font/size — small per-line differences compound over
+  // a full resume into a real gap. The preview asks for a tighter budget
+  // (< 1) to absorb that drift and still land inside one visible page.
+  availableHeightFactor = 1,
 ): LayoutTier {
-  for (const tier of LAYOUT_TIERS) {
-    const available = PAGE_HEIGHT - tier.margin * 2;
+  const fits = (t: number) => {
+    const tier = interpolateTier(t);
+    const available = (PAGE_HEIGHT - tier.margin * 2) * availableHeightFactor;
     const needed = measureContentHeight(headerLabel, tailoredResume, regular, bold, tier);
-    if (needed <= available) return tier;
-  }
-  // Even the tightest tier overflows (an unusually long resume) — use it
+    return needed <= available;
+  };
+
+  // Even the tightest spacing overflows (an unusually long resume) — use it
   // anyway and let the normal page-break logic below spill onto page 2
   // rather than compressing type past readability.
-  return LAYOUT_TIERS[LAYOUT_TIERS.length - 1];
+  if (!fits(0)) return interpolateTier(0);
+  // Short resume — the spacious extreme already fits with room to spare.
+  if (fits(1)) return interpolateTier(1);
+
+  // Binary-search the most generous point on the spacious<->tight spectrum
+  // that still lands on exactly one page, so the page fills up as much as
+  // the content allows instead of jumping between a few fixed presets.
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 20; i++) {
+    const mid = (lo + hi) / 2;
+    if (fits(mid)) lo = mid;
+    else hi = mid;
+  }
+  return interpolateTier(lo);
+}
+
+// Public entry point for computing the layout tier a given resume would
+// get, without generating a full PDF — used by the client-side preview so
+// its spacing matches what "Generate PDF" will actually produce.
+export async function computeLayoutTier(params: {
+  company: string;
+  roleTitle: string;
+  tailoredResume: string;
+  availableHeightFactor?: number;
+}): Promise<LayoutTier> {
+  const { company, roleTitle, tailoredResume, availableHeightFactor = 1 } = params;
+  const doc = await PDFDocument.create();
+  const regular = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const headerLabel = `Tailored for: ${roleTitle} at ${company}`;
+  return chooseLayoutTier(headerLabel, tailoredResume, regular, bold, availableHeightFactor);
 }
 
 export async function buildResumePdf(params: {

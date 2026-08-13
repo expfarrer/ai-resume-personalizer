@@ -10,7 +10,7 @@ import { PDFDocument, StandardFonts, rgb, PDFFont, PDFPage } from "pdf-lib";
 
 const PAGE_WIDTH = 612; // US Letter, points
 const PAGE_HEIGHT = 792;
-const MARGIN = 40;
+const MARGIN = 28;
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
 
 // Common "smart" typography a model tends to produce, mapped to plain ASCII
@@ -153,7 +153,7 @@ export async function buildResumePdf(params: {
     size: number,
     color = rgb(0.1, 0.1, 0.12),
     indent = 0,
-    lineGap = 2.5,
+    lineGap = 1.3,
   ) {
     const lines = wrapLine(text, font, size, CONTENT_WIDTH - indent);
     for (const line of lines) {
@@ -176,7 +176,7 @@ export async function buildResumePdf(params: {
     const trimmedRaw = rawLine.trimEnd();
 
     if (trimmedRaw.trim().length === 0) {
-      if (!previousWasBlank) y -= 4;
+      if (!previousWasBlank) y -= 2;
       previousWasBlank = true;
       continue;
     }
@@ -189,14 +189,14 @@ export async function buildResumePdf(params: {
       if (!heading) continue;
       if (level <= 2) {
         // Major section heading (Technical Skills, Experience, ...)
-        ensureSpace(18);
-        y -= 4;
-        drawWrapped(heading, bold, 12.5, rgb(0.05, 0.05, 0.08));
+        ensureSpace(13);
+        y -= 2;
+        drawWrapped(heading, bold, 10.5, rgb(0.05, 0.05, 0.08));
       } else {
         // Sub-heading — e.g. a single role's title | company - dates line
-        ensureSpace(14);
-        y -= 2;
-        drawWrapped(heading, bold, 10.5, rgb(0.15, 0.15, 0.18));
+        ensureSpace(11);
+        y -= 0.5;
+        drawWrapped(heading, bold, 9.5, rgb(0.15, 0.15, 0.18));
       }
       continue;
     }
@@ -205,10 +205,10 @@ export async function buildResumePdf(params: {
     if (bulletMatch) {
       const content = cleanLine(bulletMatch[1]);
       if (!content) continue;
-      const bulletSize = 10;
+      const bulletSize = 9;
       const lines = wrapLine(content, regular, bulletSize, CONTENT_WIDTH - 14);
       lines.forEach((l, i) => {
-        ensureSpace(bulletSize + 2.5);
+        ensureSpace(bulletSize + 1.3);
         if (i === 0) {
           // "•" sits higher than the text baseline than letters do, so nudge
           // it up slightly to look vertically centered against the line.
@@ -227,14 +227,14 @@ export async function buildResumePdf(params: {
           font: regular,
           color: rgb(0.1, 0.1, 0.12),
         });
-        y -= bulletSize + 2.5;
+        y -= bulletSize + 1.3;
       });
       continue;
     }
 
     const paragraph = cleanLine(trimmedRaw);
     if (!paragraph) continue;
-    drawWrapped(paragraph, regular, 10);
+    drawWrapped(paragraph, regular, 9);
   }
 
   return doc.save();

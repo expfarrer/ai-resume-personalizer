@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { OutputSchema } from "@/lib/schema";
 import { prisma } from "@/lib/prisma";
 import { makeMockOutput, mockStreamingJson } from "@/lib/mockOpenAI";
+import { normalizeForAts } from "@/lib/atsNormalize";
 import {
   extractDocxBuffer,
   extractFirstUrl,
@@ -347,6 +348,7 @@ export async function POST(req: Request) {
         // NON-STREAM mock: validate and save
         const parsed = makeMockOutput(jobDesc, experience, provider);
         const valid = OutputSchema.parse(parsed);
+        valid.tailoredResume = normalizeForAts(valid.tailoredResume);
         const saved = await prisma.generation.create({
           data: {
             jobDesc,
@@ -379,6 +381,7 @@ export async function POST(req: Request) {
       );
     } else {
       const parsed = await callModel(provider, prompt);
+      parsed.tailoredResume = normalizeForAts(parsed.tailoredResume);
       const saved = await prisma.generation.create({
         data: {
           jobDesc,

@@ -43,7 +43,11 @@ const SPACIOUS_TIER: LayoutTier = {
   lineGap: 2.5,
   headingPre: 4,
   subheadingPre: 2,
-  blankGap: 4,
+  // Close to a full line's height so a manually-inserted blank line reads
+  // as an actual empty row, not a barely-visible nudge — a few points on
+  // top of the line-height already applied after the preceding line was
+  // basically invisible in practice.
+  blankGap: 10,
 };
 
 const TIGHT_TIER: LayoutTier = {
@@ -55,7 +59,7 @@ const TIGHT_TIER: LayoutTier = {
   lineGap: 1.3,
   headingPre: 2,
   subheadingPre: 0.5,
-  blankGap: 2,
+  blankGap: 4,
 };
 
 // t=0 -> TIGHT_TIER, t=1 -> SPACIOUS_TIER

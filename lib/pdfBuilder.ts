@@ -157,15 +157,44 @@ function wrapLine(text: string, font: PDFFont, size: number, maxWidth: number): 
   return lines.length > 0 ? lines : [""];
 }
 
-export function buildResumeFilename(company: string, roleTitle: string): string {
-  const sanitize = (s: string) =>
-    (s ?? "")
-      .replace(/[\\/:*?"<>|]/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 60);
+// Per the prompt's own formatting rules, the candidate's name is always the
+// first non-blank line of tailoredResume, alone on its own line.
+export function extractCandidateName(tailoredResume: string): string {
+  const firstLine = tailoredResume.split("\n").find((l) => l.trim().length > 0) ?? "";
+  return firstLine.trim();
+}
 
-  const parts = [sanitize(company), sanitize(roleTitle)].filter(Boolean);
+function sanitizeFilenameSegment(s: string): string {
+  return (s ?? "")
+    .replace(/[\\/:*?"<>|]/g, "")
+    .replace(/,/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Truncates at a word boundary rather than mid-word — a JD's own role title
+// can run long ("Manager, Media Relations, Harvard College"), and a hard
+// character cutoff would leave the filename ending on half a word.
+function truncateAtWord(s: string, maxLen: number): string {
+  if (s.length <= maxLen) return s;
+  const cut = s.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > maxLen / 2 ? cut.slice(0, lastSpace) : cut).trim();
+}
+
+export function buildResumeFilename(candidateName: string, roleTitle: string): string {
+  const nameParts = sanitizeFilenameSegment(candidateName).split(" ").filter(Boolean);
+  // First + last only (drop middle names) so the filename stays short and
+  // matches what someone would actually save their own resume as.
+  const firstLast =
+    nameParts.length >= 2
+      ? `${nameParts[0]} ${nameParts[nameParts.length - 1]}`
+      : nameParts.join(" ");
+
+  // Job titles pulled verbatim from a JD can be long and comma-heavy —
+  // capped well below the old 60-char limit so the filename stays usable.
+  const role = truncateAtWord(sanitizeFilenameSegment(roleTitle), 30);
+  const parts = [firstLast, role].filter(Boolean);
   if (parts.length === 0) return "Resume.pdf";
   return `${parts.join(" - ")} - Resume.pdf`;
 }

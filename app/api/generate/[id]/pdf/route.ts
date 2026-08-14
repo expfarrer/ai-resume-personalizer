@@ -6,6 +6,7 @@ import {
   buildAsciiFilename,
   buildResumeFilename,
   buildResumePdf,
+  extractCandidateName,
 } from "@/lib/pdfBuilder";
 
 export const runtime = "nodejs";
@@ -62,7 +63,7 @@ export async function GET(
     gen.resultJson,
   );
   const pdfBytes = await buildResumePdf({ company, roleTitle, tailoredResume });
-  const filename = buildResumeFilename(company, roleTitle);
+  const filename = buildResumeFilename(extractCandidateName(tailoredResume), roleTitle);
   const asciiFilename = buildAsciiFilename(filename).replace(/"/g, "");
 
   return new NextResponse(pdfBytes as BodyInit, {

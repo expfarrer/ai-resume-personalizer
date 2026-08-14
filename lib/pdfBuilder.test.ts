@@ -1,21 +1,51 @@
 import { describe, expect, it } from "vitest";
-import { buildAsciiFilename, buildResumeFilename, buildResumePdf } from "./pdfBuilder";
+import {
+  buildAsciiFilename,
+  buildResumeFilename,
+  buildResumePdf,
+  extractCandidateName,
+} from "./pdfBuilder";
 
 describe("buildResumeFilename", () => {
-  it("joins company and role title", () => {
-    expect(buildResumeFilename("Acme Corp", "Senior Engineer")).toBe(
-      "Acme Corp - Senior Engineer - Resume.pdf",
+  it("joins first name, last name, and role title", () => {
+    expect(buildResumeFilename("Jordan Rivera", "Senior Engineer")).toBe(
+      "Jordan Rivera - Senior Engineer - Resume.pdf",
+    );
+  });
+
+  it("drops middle names, keeping only first and last", () => {
+    expect(buildResumeFilename("Jordan Alex Rivera", "Senior Engineer")).toBe(
+      "Jordan Rivera - Senior Engineer - Resume.pdf",
     );
   });
 
   it("strips filesystem-reserved characters", () => {
-    expect(buildResumeFilename('Acme/Corp:Test?"<>|', "Role")).toBe(
-      "AcmeCorpTest - Role - Resume.pdf",
+    expect(buildResumeFilename('Jordan/Rivera:Test?"<>|', "Role")).toBe(
+      "JordanRiveraTest - Role - Resume.pdf",
     );
   });
 
   it("falls back to a generic name when both inputs are empty", () => {
     expect(buildResumeFilename("", "")).toBe("Resume.pdf");
+  });
+
+  it("truncates a long, comma-heavy JD role title at a word boundary", () => {
+    const result = buildResumeFilename(
+      "Theresa Conio",
+      "Manager, Media Relations, Harvard College",
+    );
+    expect(result).toBe("Theresa Conio - Manager Media Relations - Resume.pdf");
+    expect(result.length).toBeLessThan(60);
+  });
+});
+
+describe("extractCandidateName", () => {
+  it("returns the first non-blank line of the tailored resume", () => {
+    expect(extractCandidateName("Jordan Rivera\njordan@example.com")).toBe("Jordan Rivera");
+  });
+
+  it("skips leading blank lines", () => {
+    expect(extractCandidateName("\n\nJordan Rivera\njordan@example.com")).toBe("Jordan Rivera");
   });
 });
 

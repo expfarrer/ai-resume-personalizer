@@ -9,19 +9,19 @@ import {
 describe("buildResumeFilename", () => {
   it("joins first name, last name, and role title", () => {
     expect(buildResumeFilename("Jordan Rivera", "Senior Engineer")).toBe(
-      "Jordan Rivera - Senior Engineer - Resume.pdf",
+      "Jordan Rivera - Senior Engineer.pdf",
     );
   });
 
   it("drops middle names, keeping only first and last", () => {
     expect(buildResumeFilename("Jordan Alex Rivera", "Senior Engineer")).toBe(
-      "Jordan Rivera - Senior Engineer - Resume.pdf",
+      "Jordan Rivera - Senior Engineer.pdf",
     );
   });
 
   it("strips filesystem-reserved characters", () => {
     expect(buildResumeFilename('Jordan/Rivera:Test?"<>|', "Role")).toBe(
-      "JordanRiveraTest - Role - Resume.pdf",
+      "JordanRiveraTest - Role.pdf",
     );
   });
 
@@ -34,7 +34,7 @@ describe("buildResumeFilename", () => {
       "Theresa Conio",
       "Manager, Media Relations, Harvard College",
     );
-    expect(result).toBe("Theresa Conio - Manager Media Relations - Resume.pdf");
+    expect(result).toBe("Theresa Conio - Manager Media Relations.pdf");
     expect(result.length).toBeLessThan(60);
   });
 });

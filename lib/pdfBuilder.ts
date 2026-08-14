@@ -196,7 +196,7 @@ export function buildResumeFilename(candidateName: string, roleTitle: string): s
   const role = truncateAtWord(sanitizeFilenameSegment(roleTitle), 30);
   const parts = [firstLast, role].filter(Boolean);
   if (parts.length === 0) return "Resume.pdf";
-  return `${parts.join(" - ")} - Resume.pdf`;
+  return `${parts.join(" - ")}.pdf`;
 }
 
 // HTTP headers are ByteString (Latin-1) only — a filename with e.g. curly

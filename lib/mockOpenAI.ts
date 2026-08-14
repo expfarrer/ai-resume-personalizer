@@ -100,7 +100,21 @@ B.Sc., Computer Science | Sample University`;
       "How do you decide what belongs in an internal developer platform?",
     ];
 
-    return { company, roleTitle, adaptationNotes, tailoredResume, interviewQuestions };
+    const coverLetter = `${name}
+jordan.candidate@example.com | (555) 123-4567 | Boston, MA
+
+Dear Hiring Manager,
+
+I'm writing to apply for the ${roleTitle} role at ${company}. In my current role as Engineering Manager, I've led a 6-person team delivering a React/Next platform, cut deploy time by 75% through redesigned CI/CD pipelines, and built the observability practices that keep our Tier-1 services reliable — work that lines up directly with what this role calls for.
+
+Beyond the day-to-day delivery, I care about building teams that get better over time: I mentor engineers, shortened new-hire onboarding from four weeks to one, and led the migration of our JavaScript codebase to TypeScript to cut down on runtime errors. I'd bring that same combination of hands-on platform work and team leadership to ${company}.
+
+I'd welcome the chance to talk through how my background fits what you're building. Thank you for your consideration.
+
+Sincerely,
+${name}`;
+
+    return { company, roleTitle, adaptationNotes, tailoredResume, coverLetter, interviewQuestions };
   }
 
   // openai mock: shorter and more concise, mirroring the real difference
@@ -152,7 +166,19 @@ B.Sc., Computer Science | Sample University`;
     "How do you prioritize feature requests from product stakeholders?",
   ];
 
-  return { company, roleTitle, adaptationNotes, tailoredResume, interviewQuestions };
+  const coverLetter = `${name}
+jordan.candidate@example.com | (555) 123-4567 | Boston, MA
+
+Dear Hiring Manager,
+
+I'm excited to apply for the ${roleTitle} position at ${company}. As an engineering leader with hands-on experience building scalable web platforms, I led a 6-person team to ship a React/Next product that improved conversion by 18%, and redesigned our CI/CD pipelines to cut deploy time by 75%.
+
+I'd bring that same track record of platform ownership and team leadership to ${company}, and I'd welcome the opportunity to discuss how my background fits your team's needs.
+
+Sincerely,
+${name}`;
+
+  return { company, roleTitle, adaptationNotes, tailoredResume, coverLetter, interviewQuestions };
 }
 
 /**

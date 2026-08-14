@@ -1,40 +1,27 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ResumeBlock,
   blocksToMarkdown,
   blocksToPlainText,
   parseResumeMarkdown,
 } from "@/lib/resumeBlocks";
-import { computeAtsScore } from "@/lib/atsScore";
 import type { PdfValidationResult } from "@/lib/pdfValidate";
 import { computeLayoutTier, type LayoutTier } from "@/lib/pdfBuilder";
+import type { PanelOutput } from "./ResumeResultPanel";
 
-export type PanelOutput = {
-  company: string;
-  roleTitle: string;
-  adaptationNotes: string;
-  tailoredResume: string;
-  // Optional: history rows saved before this field existed won't have one.
-  coverLetter?: string;
-  interviewQuestions: string[];
-};
+// Same editable-blocks pattern as ResumeResultPanel (parse -> editable
+// blocks -> serialize for PDF/plain-text), reused verbatim: a cover letter
+// is just body-paragraph markdown with no headings/bullets, which
+// lib/resumeBlocks.ts already handles generically. Kept as a self-contained
+// sibling component (some duplication of the small shared bits below)
+// rather than a shared abstraction, since the two panels' toolbars differ
+// (ATS score/Interview Prep are resume-only) and would need to fork anyway.
 
-type ViewMode = "formatted" | "raw";
-
-// PDF points -> on-screen CSS pixels at the 96 DPI this preview is sized
-// for (matches the 816px-wide US Letter page below: 8.5in * 96 = 816).
 const PT_TO_PX = 96 / 72;
-// US Letter height (792pt) in that same 96 DPI — the preview page is fixed
-// to this height so left-over space at the bottom is actually visible,
-// instead of the container just shrink-wrapping to whatever the content's
-// natural height happens to be.
 const PAGE_HEIGHT_PX = 792 * PT_TO_PX;
 
-// Generous fallback used until the real layout tier has been computed (or
-// if that computation fails) — matches the spacious end of the PDF's own
-// spacing range so the preview never looks worse than the eventual PDF.
 const FALLBACK_TIER: LayoutTier = {
   margin: 40,
   headingSize: 12.5,
@@ -47,8 +34,6 @@ const FALLBACK_TIER: LayoutTier = {
   blankGap: 4,
 };
 
-// Always dark-on-light — this is standing in for a printed page, so it
-// stays readable as black-on-white regardless of the site's dark mode.
 const editableFieldClass =
   "w-full resize-none overflow-hidden border-0 bg-transparent p-0 text-slate-900 focus:outline-none focus:ring-0 focus:bg-indigo-50/70";
 
@@ -84,24 +69,22 @@ function AutoGrowTextarea({
   );
 }
 
-export default function ResumeResultPanel({
+type ViewMode = "formatted" | "raw";
+
+export default function CoverLetterPanel({
   providerLabel,
   output,
-  applyUrl,
-  jobDescText,
+  coverLetter,
 }: {
   providerLabel: string;
-  output: PanelOutput;
-  applyUrl: string | null;
-  jobDescText: string;
+  output: Pick<PanelOutput, "company" | "roleTitle">;
+  coverLetter: string;
 }) {
   const [blocks, setBlocks] = useState<ResumeBlock[]>(() =>
-    parseResumeMarkdown(output.tailoredResume),
+    parseResumeMarkdown(coverLetter),
   );
   const [viewMode, setViewMode] = useState<ViewMode>("formatted");
   const [pdfGenerating, setPdfGenerating] = useState(false);
-  const [showInterviewModal, setShowInterviewModal] = useState(false);
-  const [showAtsBreakdown, setShowAtsBreakdown] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<string>("");
   const [verifyResult, setVerifyResult] = useState<PdfValidationResult | null>(null);
@@ -109,31 +92,21 @@ export default function ResumeResultPanel({
   const [showVerifyBreakdown, setShowVerifyBreakdown] = useState(false);
   const [layoutTier, setLayoutTier] = useState<LayoutTier>(FALLBACK_TIER);
 
-  const atsResult = useMemo(
-    () => computeAtsScore(blocks, jobDescText, output.company),
-    [blocks, jobDescText, output.company],
-  );
-
   useEffect(() => {
-    setBlocks(parseResumeMarkdown(output.tailoredResume));
+    setBlocks(parseResumeMarkdown(coverLetter));
     setViewMode("formatted");
     setError(null);
     setVerifyResult(null);
     setShowVerifyBreakdown(false);
-  }, [output]);
+  }, [coverLetter]);
 
-  // Recomputes the same spacing tier /api/pdf will pick for this exact
-  // content, so the editable preview shows how full the exported PDF page
-  // will actually be — not a fixed spacing unrelated to content length.
-  // Debounced since this reruns on every keystroke while editing.
+  // Same adaptive-spacing tier computation as the resume preview, so the
+  // cover letter's editable page shows how full the exported PDF will
+  // actually be. Debounced since it reruns on every keystroke while editing.
   useEffect(() => {
     const handle = window.setTimeout(() => {
       computeLayoutTier({
         tailoredResume: blocksToMarkdown(blocks),
-        // Browser text reflow wraps slightly more eagerly than pdf-lib's
-        // own measurement even at matching font/size — bias toward a
-        // tighter tier here so the preview reliably lands within one
-        // visible page instead of spilling past it.
         availableHeightFactor: 0.84,
       })
         .then(setLayoutTier)
@@ -180,13 +153,13 @@ export default function ResumeResultPanel({
     setPdfGenerating(true);
     setError(null);
     try {
-      const res = await fetch("/api/pdf", {
+      const res = await fetch("/api/coverletter/pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           company: output.company,
           roleTitle: output.roleTitle,
-          tailoredResume: blocksToMarkdown(blocks),
+          coverLetter: blocksToMarkdown(blocks),
         }),
       });
 
@@ -202,7 +175,7 @@ export default function ResumeResultPanel({
 
       const a = document.createElement("a");
       a.href = objectUrl;
-      a.download = filenameMatch ? filenameMatch[1] : "Resume.pdf";
+      a.download = filenameMatch ? filenameMatch[1] : "Cover Letter.pdf";
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -218,6 +191,9 @@ export default function ResumeResultPanel({
     setVerifying(true);
     setError(null);
     try {
+      // Reuses the same independent-extraction validator as the resume —
+      // it's already generic (company/roleTitle/tailoredResume in, pass/fail
+      // checks out), so no cover-letter-specific endpoint is needed.
       const res = await fetch("/api/pdf/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -252,22 +228,8 @@ export default function ResumeResultPanel({
               {providerLabel}
             </span>
             <div className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-              {output.roleTitle} @ {output.company}
+              Cover Letter — {output.roleTitle} @ {output.company}
             </div>
-            <button
-              type="button"
-              onClick={() => setShowAtsBreakdown((v) => !v)}
-              className={
-                "inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-bold " +
-                (atsResult.score >= 80
-                  ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
-                  : atsResult.score >= 60
-                    ? "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
-                    : "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300")
-              }
-            >
-              ATS {atsResult.score}/100 {showAtsBreakdown ? "▲" : "▼"}
-            </button>
 
             {verifyResult ? (
               <button
@@ -295,28 +257,8 @@ export default function ResumeResultPanel({
             )}
           </div>
           <div className="text-xs text-slate-600 dark:text-slate-300">
-            Editable — proofread and make any small corrections before
-            generating your PDF.
+            Editable — proofread before generating your PDF.
           </div>
-
-          {showAtsBreakdown && (
-            <ul className="mt-2 space-y-1 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-800 dark:bg-slate-950">
-              {atsResult.checks.map((c, i) => (
-                <li
-                  key={i}
-                  className={
-                    "flex items-start gap-1.5 " +
-                    (c.passed
-                      ? "text-emerald-700 dark:text-emerald-400"
-                      : "text-rose-700 dark:text-rose-400")
-                  }
-                >
-                  <span>{c.passed ? "✓" : "✗"}</span>
-                  <span className="text-slate-700 dark:text-slate-300">{c.label}</span>
-                </li>
-              ))}
-            </ul>
-          )}
 
           {verifyResult && showVerifyBreakdown && (
             <ul className="mt-2 space-y-1 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-800 dark:bg-slate-950">
@@ -385,34 +327,7 @@ export default function ResumeResultPanel({
           >
             Copy Plain Text
           </button>
-
-          {applyUrl && (
-            <a
-              href={applyUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="h-9 inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-900 shadow-sm hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
-            >
-              Apply here ↗
-            </a>
-          )}
-
-          <button
-            onClick={() => setShowInterviewModal(true)}
-            className="h-9 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-900 shadow-sm hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
-          >
-            Interview Prep ({output.interviewQuestions.length})
-          </button>
         </div>
-      </div>
-
-      <div className="border-b border-slate-200 bg-indigo-50/60 px-6 py-4 dark:border-slate-800 dark:bg-indigo-950/20">
-        <div className="text-xs font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
-          How this was tailored to the job
-        </div>
-        <p className="mt-1 whitespace-pre-line text-sm text-indigo-950 dark:text-indigo-100">
-          {output.adaptationNotes}
-        </p>
       </div>
 
       <div className="p-6">
@@ -422,19 +337,7 @@ export default function ResumeResultPanel({
           </div>
         )}
 
-        {!applyUrl && (
-          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100">
-            No apply link detected — pasted text doesn&apos;t carry links. Use the
-            JD link field (or paste a URL along with the text) to get an
-            &quot;Apply here&quot; shortcut next time.
-          </div>
-        )}
-
         {viewMode === "formatted" ? (
-          // Sized and margined to mirror the actual exported PDF (US Letter,
-          // 612x792pt at the same ~6.5% margins) so this is a real preview
-          // of the page, not just a generically-wide text column. Always
-          // rendered light/white — it's standing in for a printed page.
           <div className="flex justify-center overflow-x-auto rounded-2xl bg-slate-200 p-4 dark:bg-slate-950 sm:p-8">
             <div
               className="shrink-0 bg-white text-slate-900 shadow-lg"
@@ -521,36 +424,6 @@ export default function ResumeResultPanel({
           </div>
         )}
       </div>
-
-      {showInterviewModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          onClick={() => setShowInterviewModal(false)}
-        >
-          <div
-            className="max-h-[80vh] w-full max-w-lg overflow-auto rounded-3xl border border-slate-200 bg-white p-6 shadow-xl dark:border-slate-800 dark:bg-slate-900"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-                Interview Prep — {providerLabel}
-              </div>
-              <button
-                onClick={() => setShowInterviewModal(false)}
-                className="h-8 w-8 rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-                aria-label="Close"
-              >
-                ✕
-              </button>
-            </div>
-            <ol className="list-decimal space-y-2 pl-5 text-sm text-slate-800 dark:text-slate-200">
-              {output.interviewQuestions.map((q, i) => (
-                <li key={i}>{q}</li>
-              ))}
-            </ol>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

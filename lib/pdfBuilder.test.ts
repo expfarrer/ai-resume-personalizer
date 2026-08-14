@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAsciiFilename,
+  buildCoverLetterFilename,
   buildResumeFilename,
   buildResumePdf,
   extractCandidateName,
@@ -36,6 +37,24 @@ describe("buildResumeFilename", () => {
     );
     expect(result).toBe("Theresa Conio - Manager Media Relations.pdf");
     expect(result.length).toBeLessThan(60);
+  });
+});
+
+describe("buildCoverLetterFilename", () => {
+  it("matches the resume filename base but with a Cover Letter suffix", () => {
+    expect(buildCoverLetterFilename("Jordan Rivera", "Senior Engineer")).toBe(
+      "Jordan Rivera - Senior Engineer - Cover Letter.pdf",
+    );
+  });
+
+  it("never collides with the resume filename for the same person/role", () => {
+    const resume = buildResumeFilename("Jordan Rivera", "Senior Engineer");
+    const coverLetter = buildCoverLetterFilename("Jordan Rivera", "Senior Engineer");
+    expect(coverLetter).not.toBe(resume);
+  });
+
+  it("falls back to a generic name when both inputs are empty", () => {
+    expect(buildCoverLetterFilename("", "")).toBe("Cover Letter.pdf");
   });
 });
 

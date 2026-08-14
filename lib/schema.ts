@@ -6,6 +6,7 @@ export const OutputSchema = z.object({
   roleTitle: z.string().min(1),
   adaptationNotes: z.string().min(10),
   tailoredResume: z.string().min(50),
+  coverLetter: z.string().min(50),
   interviewQuestions: z.array(z.string().min(1)).min(8).max(12),
 });
 

@@ -46,6 +46,7 @@ const RESUME_TOOL = {
         maxItems: 12,
       },
       adaptationNotes: { type: "string" },
+      coverLetter: { type: "string" },
       tailoredResume: { type: "string" },
     },
     required: [
@@ -53,6 +54,7 @@ const RESUME_TOOL = {
       "roleTitle",
       "interviewQuestions",
       "adaptationNotes",
+      "coverLetter",
       "tailoredResume",
     ],
   },
@@ -177,15 +179,23 @@ Rules:
 - Use plain ASCII punctuation only: straight quotes ('/") and hyphens (-), never curly quotes, em/en dashes, ellipsis characters, or decorative symbols/emoji.
 - Keep it plain, scannable body text — this file will be parsed by both automated ATS scanners and human recruiters.
 
+"coverLetter" must be a genuine, tailored cover letter for this specific job — not a summary of the resume — targeting 200-350 words, formatted as follows:
+- Line 1: the candidate's name alone (same name as the resume header). Line 2: the same single-line contact details used in the resume header. Then a blank line, then "Dear Hiring Manager," (use a named contact only if the job description actually states one) on its own line.
+- 2-4 short body paragraphs, no bullets, no headings: open with the specific role and company and why the candidate is a fit; connect 2-3 concrete, real achievements or skills from the candidate's actual resume to what the job description asks for (do not invent anything not in the source resume, same rule as the resume itself); close with genuine interest and availability for a conversation.
+- End with "Sincerely," on its own line, then the candidate's name on the line after.
+- Same plain-ASCII, single-column, ATS-safe formatting rules as the resume: straight quotes and hyphens only, no curly quotes/em-dashes/decorative symbols, no tables or images.
+- If special instructions were given above, apply the ones that are relevant to a cover letter's tone/content (e.g. emphasizing certain experience, a nickname) the same way as for the resume.
+
 ${provider === "claude" ? "Provide" : "Return a single JSON object with"} exactly these fields, in this order:
 - "company": the hiring company's name as stated in the job description, written normally with spaces (do not use underscores or camelCase). If it truly cannot be determined, use "Unknown Company".
 - "roleTitle": the job title as stated in the job description, written normally with spaces (do not use underscores or camelCase). If it truly cannot be determined, use "Target Role".
 - "interviewQuestions": an array of 8 to 12 separate likely interview question strings (not one combined string) the candidate should prepare for, based on the overlap between the job description and their experience. Generate this BEFORE writing the full resume text below.
 - "adaptationNotes": NOT a resume summary — a short validation note (up to 5 lines, plain sentences separated by newlines, no bullets/markdown) telling the candidate specifically what was changed or emphasized to tailor this resume to this job description. Reference concrete overlaps, e.g. which skills/experience were reordered or emphasized and which JD requirements they map to. If special instructions were provided above, explicitly confirm how each one was applied (or note if one couldn't be followed and why). This is meta-commentary for the candidate to sanity-check the output, not part of the resume itself (at least 10 characters).
+- "coverLetter": the full cover letter per the rules above (at least 50 characters). Write this before tailoredResume.
 - "tailoredResume": the full rewritten resume per the ATS formatting rules above, tailored to the job description, based only on the candidate's actual resume content${specialInstructions ? " AND fully reflecting every candidate-directed instruction above" : ""} (at least 50 characters). Write this LAST.
 ${
   provider === "claude"
-    ? "\nCall the return_tailored_resume tool with these fields in the order listed above — interviewQuestions must be an actual array with 8-12 separate string elements, not a single string, generated before tailoredResume."
+    ? "\nCall the return_tailored_resume tool with these fields in the order listed above — interviewQuestions must be an actual array with 8-12 separate string elements, not a single string, generated before coverLetter and tailoredResume."
     : "\nRespond with only the JSON object, no markdown fences, no commentary."
 }`;
 }

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import ResumeResultPanel, { PanelOutput } from "./ResumeResultPanel";
+import CoverLetterPanel from "./CoverLetterPanel";
 
 type Output = PanelOutput;
 
@@ -42,6 +43,9 @@ function isSavedResume(x: unknown): x is SavedResume {
 function isOutput(x: unknown): x is Output {
   if (typeof x !== "object" || x === null) return false;
   const r = x as Record<string, unknown>;
+  // coverLetter is intentionally not required here — history rows saved
+  // before this field existed still need to load; those just render with
+  // no cover letter panel instead of failing to load entirely.
   return (
     typeof r.adaptationNotes === "string" &&
     typeof r.tailoredResume === "string" &&
@@ -785,31 +789,58 @@ export default function StreamGenerator() {
 
         {/* Output — front and center: editable tailored resume document(s) */}
         {historyResult && (
-          <ResumeResultPanel
-            providerLabel="History"
-            output={historyResult.output}
-            applyUrl={historyResult.applyUrl}
-            jobDescText={historyResult.jobDescText}
-          />
+          <>
+            <ResumeResultPanel
+              providerLabel="History"
+              output={historyResult.output}
+              applyUrl={historyResult.applyUrl}
+              jobDescText={historyResult.jobDescText}
+            />
+            {historyResult.output.coverLetter && (
+              <CoverLetterPanel
+                providerLabel="History"
+                output={historyResult.output}
+                coverLetter={historyResult.output.coverLetter}
+              />
+            )}
+          </>
         )}
 
         {resultCount > 0 && (
           <div className="space-y-4">
             {results.openai && (
-              <ResumeResultPanel
-                providerLabel="ChatGPT"
-                output={results.openai.output}
-                applyUrl={results.openai.applyUrl}
-                jobDescText={results.openai.jobDescText}
-              />
+              <>
+                <ResumeResultPanel
+                  providerLabel="ChatGPT"
+                  output={results.openai.output}
+                  applyUrl={results.openai.applyUrl}
+                  jobDescText={results.openai.jobDescText}
+                />
+                {results.openai.output.coverLetter && (
+                  <CoverLetterPanel
+                    providerLabel="ChatGPT"
+                    output={results.openai.output}
+                    coverLetter={results.openai.output.coverLetter}
+                  />
+                )}
+              </>
             )}
             {results.claude && (
-              <ResumeResultPanel
-                providerLabel="Claude"
-                output={results.claude.output}
-                applyUrl={results.claude.applyUrl}
-                jobDescText={results.claude.jobDescText}
-              />
+              <>
+                <ResumeResultPanel
+                  providerLabel="Claude"
+                  output={results.claude.output}
+                  applyUrl={results.claude.applyUrl}
+                  jobDescText={results.claude.jobDescText}
+                />
+                {results.claude.output.coverLetter && (
+                  <CoverLetterPanel
+                    providerLabel="Claude"
+                    output={results.claude.output}
+                    coverLetter={results.claude.output.coverLetter}
+                  />
+                )}
+              </>
             )}
           </div>
         )}

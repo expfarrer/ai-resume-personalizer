@@ -182,7 +182,7 @@ function truncateAtWord(s: string, maxLen: number): string {
   return (lastSpace > maxLen / 2 ? cut.slice(0, lastSpace) : cut).trim();
 }
 
-export function buildResumeFilename(candidateName: string, roleTitle: string): string {
+function buildFirstLastRole(candidateName: string, roleTitle: string): string {
   const nameParts = sanitizeFilenameSegment(candidateName).split(" ").filter(Boolean);
   // First + last only (drop middle names) so the filename stays short and
   // matches what someone would actually save their own resume as.
@@ -194,9 +194,20 @@ export function buildResumeFilename(candidateName: string, roleTitle: string): s
   // Job titles pulled verbatim from a JD can be long and comma-heavy —
   // capped well below the old 60-char limit so the filename stays usable.
   const role = truncateAtWord(sanitizeFilenameSegment(roleTitle), 30);
-  const parts = [firstLast, role].filter(Boolean);
-  if (parts.length === 0) return "Resume.pdf";
-  return `${parts.join(" - ")}.pdf`;
+  return [firstLast, role].filter(Boolean).join(" - ");
+}
+
+export function buildResumeFilename(candidateName: string, roleTitle: string): string {
+  const base = buildFirstLastRole(candidateName, roleTitle);
+  return base ? `${base}.pdf` : "Resume.pdf";
+}
+
+// Same "First Last - Role" base as the resume, with a suffix — otherwise
+// the resume and cover letter PDFs for the same application would collide
+// on an identical filename.
+export function buildCoverLetterFilename(candidateName: string, roleTitle: string): string {
+  const base = buildFirstLastRole(candidateName, roleTitle);
+  return base ? `${base} - Cover Letter.pdf` : "Cover Letter.pdf";
 }
 
 // HTTP headers are ByteString (Latin-1) only — a filename with e.g. curly
@@ -332,12 +343,17 @@ export async function buildResumePdf(params: {
   company: string;
   roleTitle: string;
   tailoredResume: string;
+  // "Resume" (default) or "Cover Letter" — this function renders both:
+  // structurally they're the same thing (plain flowing text, adaptively
+  // spaced to fit one page), just different body content. Only affects
+  // invisible PDF metadata (Title/Subject), not the rendered page.
+  documentLabel?: string;
 }): Promise<Uint8Array> {
-  const { company, roleTitle, tailoredResume } = params;
+  const { company, roleTitle, tailoredResume, documentLabel = "Resume" } = params;
 
   const doc = await PDFDocument.create();
-  doc.setTitle(sanitizeForPdf(`${roleTitle} - ${company} - Resume`));
-  doc.setSubject("Tailored resume");
+  doc.setTitle(sanitizeForPdf(`${roleTitle} - ${company} - ${documentLabel}`));
+  doc.setSubject(`Tailored ${documentLabel.toLowerCase()}`);
   doc.setProducer("AI Resume Personalizer");
 
   const regular = await doc.embedFont(StandardFonts.Helvetica);
